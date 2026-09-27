@@ -1,4 +1,5 @@
 -- Alergia — Row Level Security e Realtime
+-- Pode ser executado mais de uma vez sem erro.
 -- O cliente só LÊ. Toda escrita acontece nos Route Handlers, com conexão
 -- privilegiada ao Postgres (que ignora RLS).
 
@@ -65,33 +66,42 @@ alter table public.team_members enable row level security;
 alter table public.team_state enable row level security;
 
 -- Públicas da sala: qualquer membro da sala lê.
+drop policy if exists rooms_select on public.rooms;
 create policy rooms_select on public.rooms
   for select to authenticated using (public.is_room_member(id));
 
+drop policy if exists players_select on public.players;
 create policy players_select on public.players
   for select to authenticated using (public.is_room_member(room_id));
 
+drop policy if exists announcements_select on public.announcements;
 create policy announcements_select on public.announcements
   for select to authenticated using (public.is_room_member(room_id));
 
+drop policy if exists final_reveal_select on public.final_reveal;
 create policy final_reveal_select on public.final_reveal
   for select to authenticated using (public.is_room_member(room_id));
 
 -- Segredos: só o dono do lugar (players.user_id = auth.uid()).
 -- Como as policies passam por players.user_id, a reentrada troca apenas essa coluna.
+drop policy if exists player_secrets_select on public.player_secrets;
 create policy player_secrets_select on public.player_secrets
   for select to authenticated using (public.owns_player(player_id));
 
+drop policy if exists player_cards_select on public.player_cards;
 create policy player_cards_select on public.player_cards
   for select to authenticated using (public.owns_player(player_id));
 
+drop policy if exists player_results_select on public.player_results;
 create policy player_results_select on public.player_results
   for select to authenticated using (public.owns_player(player_id));
 
 -- Equipes: só membros da equipe.
+drop policy if exists team_members_select on public.team_members;
 create policy team_members_select on public.team_members
   for select to authenticated using (public.is_team_member(room_id, team));
 
+drop policy if exists team_state_select on public.team_state;
 create policy team_state_select on public.team_state
   for select to authenticated using (public.is_team_member(room_id, team));
 
@@ -124,15 +134,22 @@ begin
   end if;
 end $$;
 
-alter publication supabase_realtime add table
-  public.rooms,
-  public.players,
-  public.announcements,
-  public.final_reveal,
-  public.player_secrets,
-  public.player_cards,
-  public.player_results,
-  public.team_state;
+do $$
+declare
+  t text;
+begin
+  foreach t in array array[
+    'rooms', 'players', 'announcements', 'final_reveal',
+    'player_secrets', 'player_cards', 'player_results', 'team_state'
+  ] loop
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t
+    ) then
+      execute format('alter publication supabase_realtime add table public.%I', t);
+    end if;
+  end loop;
+end $$;
 
 -- Faz a API (PostgREST) recarregar o cache de tabelas imediatamente.
 notify pgrst, 'reload schema';
