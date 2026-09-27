@@ -54,8 +54,9 @@ const REJOIN_TTL_MS = 10 * 60 * 1000;
 const CODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const REJOIN_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
+/** Modo de teste: liberado fora de produção ou com NEXT_PUBLIC_ALERGIA_DEV_TOOLS=1 (ex.: só no Preview da Vercel). */
 export function devToolsEnabled(): boolean {
-  return process.env.NODE_ENV !== 'production';
+  return process.env.NODE_ENV !== 'production' || process.env.NEXT_PUBLIC_ALERGIA_DEV_TOOLS === '1';
 }
 
 // ------------------------------------------------------------------ utilidades

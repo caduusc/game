@@ -8,7 +8,8 @@ import { Logo } from './Logo';
 type Mode = 'join' | 'create' | 'rejoin';
 
 const NAME_KEY = 'alergia-name';
-const IS_DEV = process.env.NODE_ENV === 'development';
+// Modo de teste: sempre em `npm run dev`; num deploy, só com NEXT_PUBLIC_ALERGIA_DEV_TOOLS=1.
+const IS_DEV = process.env.NODE_ENV === 'development' || process.env.NEXT_PUBLIC_ALERGIA_DEV_TOOLS === '1';
 
 export function Home() {
   const router = useRouter();
