@@ -46,6 +46,11 @@ export function useRoom(code: string) {
   const [pub, setPub] = useState<PublicData>({ room: null, players: [], announcements: [], reveal: [] });
   const [priv, setPriv] = useState<PrivateData>(EMPTY_PRIVATE);
   const [viewAs, setViewAsState] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const report = useCallback((table: string, err: { message: string; code?: string }) => {
+    console.error(`[alergia] falha ao ler ${table}:`, err);
+    setLoadError(`${table}: ${err.message}${err.code ? ` (${err.code})` : ''}`);
+  }, []);
 
   const idRef = useRef<Identity | null>(null);
   const viewAsRef = useRef<string | null>(null);
@@ -60,22 +65,27 @@ export function useRoom(code: string) {
       const devTarget = viewAsRef.current && viewAsRef.current !== id.playerId ? viewAsRef.current : null;
       switch (t) {
         case 'rooms': {
-          const { data } = await sb.from('rooms').select('*').eq('id', id.roomId).maybeSingle();
+          const { data, error } = await sb.from('rooms').select('*').eq('id', id.roomId).maybeSingle();
+          if (error) report('rooms', error);
+          else if (!data) report('rooms', { message: 'a sala não foi retornada (bloqueada pelo RLS?)' });
           if (data) setPub((p) => ({ ...p, room: data as RoomRow }));
           return;
         }
         case 'players': {
-          const { data } = await sb.from('players').select('*').eq('room_id', id.roomId).order('seat').order('joined_at');
+          const { data, error } = await sb.from('players').select('*').eq('room_id', id.roomId).order('seat').order('joined_at');
+          if (error) report('players', error);
           if (data) setPub((p) => ({ ...p, players: data as PlayerRow[] }));
           return;
         }
         case 'announcements': {
-          const { data } = await sb.from('announcements').select('*').eq('room_id', id.roomId).order('round').order('seat');
+          const { data, error } = await sb.from('announcements').select('*').eq('room_id', id.roomId).order('round').order('seat');
+          if (error) report('announcements', error);
           if (data) setPub((p) => ({ ...p, announcements: data as AnnouncementRow[] }));
           return;
         }
         case 'final_reveal': {
-          const { data } = await sb.from('final_reveal').select('*').eq('room_id', id.roomId).order('seat');
+          const { data, error } = await sb.from('final_reveal').select('*').eq('room_id', id.roomId).order('seat');
+          if (error) report('final_reveal', error);
           if (data) setPub((p) => ({ ...p, reveal: data as RevealRow[] }));
           return;
         }
@@ -90,28 +100,32 @@ export function useRoom(code: string) {
       }
       switch (t) {
         case 'player_secrets': {
-          const { data } = await sb.from('player_secrets').select('*').eq('player_id', id.playerId).maybeSingle();
+          const { data, error } = await sb.from('player_secrets').select('*').eq('player_id', id.playerId).maybeSingle();
+          if (error) report('player_secrets', error);
           setPriv((p) => ({ ...p, secret: (data as SecretRow | null) ?? null }));
           return;
         }
         case 'player_cards': {
-          const { data } = await sb.from('player_cards').select('*').eq('player_id', id.playerId).order('slot');
+          const { data, error } = await sb.from('player_cards').select('*').eq('player_id', id.playerId).order('slot');
+          if (error) report('player_cards', error);
           if (data) setPriv((p) => ({ ...p, cards: data as CardRow[] }));
           return;
         }
         case 'player_results': {
-          const { data } = await sb.from('player_results').select('*').eq('player_id', id.playerId).order('idx');
+          const { data, error } = await sb.from('player_results').select('*').eq('player_id', id.playerId).order('idx');
+          if (error) report('player_results', error);
           if (data) setPriv((p) => ({ ...p, results: data as ResultRow[] }));
           return;
         }
         case 'team_state': {
-          const { data } = await sb.from('team_state').select('team, data').eq('room_id', id.roomId);
+          const { data, error } = await sb.from('team_state').select('team, data').eq('room_id', id.roomId);
+          if (error) report('team_state', error);
           if (data) setPriv((p) => ({ ...p, ...splitTeams(data as TeamStateRow[]) }));
           return;
         }
       }
     },
-    [code],
+    [code, report],
   );
 
   const refresh = useCallback(
@@ -162,7 +176,11 @@ export function useRoom(code: string) {
         const id = await sendHeartbeat();
         if (cancelled) return;
         const sb = supabase();
-        await sb.realtime.setAuth(session.access_token);
+        // Não deixa o Realtime travar a carga da sala.
+        await Promise.race([
+          Promise.resolve(sb.realtime.setAuth(session.access_token)).catch(() => {}),
+          new Promise((r) => setTimeout(r, 3000)),
+        ]);
         channel = sb.channel(`room-${id.roomId}-${Math.random().toString(36).slice(2)}`);
         for (const t of [...PUBLIC_TABLES, ...PRIVATE_TABLES]) {
           channel.on(
@@ -230,5 +248,5 @@ export function useRoom(code: string) {
     [refresh],
   );
 
-  return { phase, error, identity, pub, priv, viewAs, setViewAs, refreshAll, sendHeartbeat };
+  return { phase, error, loadError, identity, pub, priv, viewAs, setViewAs, refreshAll, sendHeartbeat };
 }
