@@ -118,7 +118,8 @@ O Postgres Changes aplica o RLS por assinante. Além disso, o cliente recarrega 
    *(Opcional)* Em **Authentication → Rate Limits**, aumente o limite de logins anônimos por IP. Numa festa, todos os celulares costumam sair pelo mesmo Wi-Fi, então o limite padrão pode travar a entrada.
 
 3. **Rode as migrations e o seed.** Escolha uma das opções:
-   - **SQL Editor:** abra **SQL Editor** e execute, nesta ordem, o conteúdo de:
+   - **SQL Editor (mais simples):** abra **SQL Editor → New query**, cole o conteúdo inteiro de `supabase/setup.sql` e clique em **Run**. Esse arquivo junta as duas migrations e o seed.
+   - **SQL Editor, arquivo por arquivo:** execute, nesta ordem, o conteúdo de:
      1. `supabase/migrations/20260927000001_schema.sql`
      2. `supabase/migrations/20260927000002_rls_realtime.sql`
      3. `supabase/seed.sql` (24 personagens e 92 charadas)
@@ -175,7 +176,7 @@ Para testar em vários celulares na mesma rede, rode `npm run dev -- -H 0.0.0.0`
 **Mudou os bancos de personagens ou charadas?** Edite `lib/engine/data/characters.ts` ou `lib/engine/data/riddles.ts` e depois rode:
 
 ```bash
-npm run seed:generate   # regenera supabase/seed.sql e supabase/seed/*.sql
+npm run seed:generate   # regenera supabase/seed.sql, supabase/seed/*.sql e supabase/setup.sql
 ```
 
 ---
@@ -290,6 +291,7 @@ lib/server/                    conexão Postgres, auth, handlers, persistência 
 lib/client/                    Supabase client, API, relógio, hooks de sala
 supabase/migrations/           esquema, RLS e Realtime
 supabase/seed.sql              personagens + charadas (gerado)
+supabase/setup.sql             migrations + seed num arquivo só, para o SQL Editor (gerado)
 scripts/generate-seed.ts       gera os seeds a partir de lib/engine/data
 tests/                         integração com Postgres + stub do Supabase
 ```

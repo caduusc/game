@@ -2,7 +2,7 @@
  * Gera os seeds SQL a partir dos bancos em TypeScript (fonte única).
  *   npm run seed:generate
  */
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { CHARACTERS } from '../lib/engine/data/characters';
 import { RIDDLES } from '../lib/engine/data/riddles';
@@ -37,4 +37,17 @@ const cleanup = `delete from game_private.characters where id not in (${CHARACTE
 writeFileSync(path.join(root, 'seed', 'characters.sql'), characters + cleanup);
 writeFileSync(path.join(root, 'seed', 'riddles.sql'), riddles);
 writeFileSync(path.join(root, 'seed.sql'), `${characters}${cleanup}\n${riddles.replace(header, '')}`);
+
+// Arquivo único para colar no SQL Editor do Supabase: migrations + seed.
+const migrationsDir = path.join(root, 'migrations');
+const migrations = readdirSync(migrationsDir)
+  .filter((f) => f.endsWith('.sql'))
+  .sort()
+  .map((f) => `-- ===== ${f}\n${readFileSync(path.join(migrationsDir, f), 'utf8')}`);
+writeFileSync(
+  path.join(root, 'setup.sql'),
+  `-- Alergia — setup completo (migrations + seed). Gerado por scripts/generate-seed.ts.\n` +
+    `-- Cole tudo no SQL Editor do Supabase e execute uma vez, num projeto novo.\n\n` +
+    `${migrations.join('\n')}\n-- ===== seed.sql\n${characters}${cleanup}\n${riddles.replace(header, '')}`,
+);
 console.log(`Gerado: ${CHARACTERS.length} personagens, ${RIDDLES.length} charadas.`);
