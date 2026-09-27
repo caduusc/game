@@ -191,7 +191,7 @@ npm run seed:generate   # regenera supabase/seed.sql, supabase/seed/*.sql e supa
 
 Recomendo colocar as Functions na mesma região do banco, em **Project Settings → Functions → Region**, por exemplo `gru1` para São Paulo. Isso reduz a latência das ações.
 
-O modo de teste fica **desligado em produção**: o servidor bloqueia bots e troca de visão quando `NODE_ENV=production`.
+O modo de teste fica **desligado em produção**: o servidor bloqueia bots e troca de visão quando `NODE_ENV=production`. Para testar com bots num deploy, veja [Modo de teste](#modo-de-teste-dev).
 
 Ao abrir o site no celular, use **"Adicionar à tela inicial"**: o app aparece com o nome **Alergia** (definido no manifest).
 
@@ -241,7 +241,13 @@ TEST_DATABASE_URL="$URL" npm test
 
 ## Modo de teste (dev)
 
-Só funciona com `npm run dev` (`NODE_ENV=development`).
+Funciona sempre com `npm run dev`. Num deploy da Vercel, só funciona com a variável `NEXT_PUBLIC_ALERGIA_DEV_TOOLS=1`:
+
+- cadastre a variável em **Settings → Environment Variables**, de preferência marcando **só Preview**, e faça **Redeploy**;
+- como o prefixo `NEXT_PUBLIC_` é embutido no build, sem o redeploy a mudança não vale;
+- quem vê a ficha de um bot vê também os segredos da equipe dele. Por isso, não deixe o modo de teste ligado onde há partidas de verdade.
+
+Com o modo liberado:
 
 1. Na tela inicial, em **Criar sala**, marque **"Modo de teste"**.
 2. No lobby, a barra amarela tem **+1 bot**, **Completar 10** e **Completar 20**.
