@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRoom } from '@/lib/client/useRoom';
 import { DevBar } from './DevBar';
 import { EndScreen } from './EndScreen';
@@ -16,6 +16,13 @@ export function RoomScreen({ code }: { code: string }) {
   useEffect(() => {
     if (phase === 'not-member') router.replace(`/?code=${code}`);
   }, [phase, code, router]);
+
+  // Se a sala não carregar em alguns segundos, mostra o motivo em vez de girar para sempre.
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setSlow(true), 8000);
+    return () => clearTimeout(t);
+  }, []);
 
   if (phase === 'error') {
     return (
@@ -32,6 +39,17 @@ export function RoomScreen({ code }: { code: string }) {
       <Centered>
         <div className="size-10 animate-spin rounded-full border-4 border-ink-600 border-t-accent" />
         <p className="mt-4 text-sm text-zinc-400">Conectando à sala {code}…</p>
+        {slow && (
+          <div className="mt-6 max-w-sm rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-left text-sm text-red-100">
+            <p className="font-semibold">Não foi possível carregar a sala.</p>
+            <p className="mt-1 break-words text-red-200/80">
+              {r.loadError ?? (phase === 'loading' ? 'O servidor ainda não respondeu.' : 'Sem resposta do Supabase.')}
+            </p>
+            <button className="btn-ghost mt-3 w-full py-2" onClick={() => location.reload()}>
+              Tentar de novo
+            </button>
+          </div>
+        )}
       </Centered>
     );
   }

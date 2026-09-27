@@ -133,3 +133,6 @@ alter publication supabase_realtime add table
   public.player_cards,
   public.player_results,
   public.team_state;
+
+-- Faz a API (PostgREST) recarregar o cache de tabelas imediatamente.
+notify pgrst, 'reload schema';

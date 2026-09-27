@@ -341,6 +341,9 @@ alter publication supabase_realtime add table
   public.player_results,
   public.team_state;
 
+-- Faz a API (PostgREST) recarregar o cache de tabelas imediatamente.
+notify pgrst, 'reload schema';
+
 -- ===== seed.sql
 -- Arquivo gerado por scripts/generate-seed.ts — não edite à mão.
 insert into game_private.characters (id, name, birth, country, gender, origin, century, area, weapon, aliases, weapon_aliases) values
