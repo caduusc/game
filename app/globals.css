@@ -1,0 +1,52 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-ink-950: #09090d;
+  --color-ink-900: #111118;
+  --color-ink-800: #1a1a24;
+  --color-ink-700: #262634;
+  --color-ink-600: #3a3a4d;
+  --color-accent: #f43f5e;
+  --color-accent-soft: #fb7185;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: var(--color-ink-950);
+  color: #e7e7ee;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  min-height: 100dvh;
+}
+
+input,
+textarea,
+select {
+  font-size: 16px; /* evita zoom automático no iOS */
+}
+
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 font-semibold transition active:scale-[0.98] disabled:opacity-40 disabled:active:scale-100;
+}
+@utility btn-primary {
+  @apply btn bg-accent text-white hover:bg-accent-soft;
+}
+@utility btn-ghost {
+  @apply btn border border-ink-600 bg-ink-800 text-zinc-100 hover:bg-ink-700;
+}
+@utility input {
+  @apply w-full rounded-xl border border-ink-600 bg-ink-950 px-4 py-3 text-zinc-100 placeholder:text-zinc-500 outline-none focus:border-accent;
+}
+@utility panel {
+  @apply rounded-2xl border border-ink-700 bg-ink-900 p-4;
+}
+@utility label {
+  @apply text-xs font-semibold tracking-wider text-zinc-400 uppercase;
+}
