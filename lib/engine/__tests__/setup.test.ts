@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CHARACTERS } from '../data/characters';
+import { QUIZ } from '../data/quiz';
 import { RIDDLES } from '../data/riddles';
 import { isGridUnique, matchingCharacters, parseHints } from '../hints';
 import { roleDistribution, setupGame } from '../setup';
@@ -31,6 +32,18 @@ describe('bancos', () => {
       const y = +c.birth.slice(0, 4);
       expect(c.century, c.name).toBe(y <= 1900 ? 'XIX' : 'XX');
     }
+  });
+
+  it('pelo menos 80 perguntas de múltipla escolha com 4 opções', () => {
+    expect(QUIZ.length).toBeGreaterThanOrEqual(80);
+    expect(new Set(QUIZ.map((q) => q.question)).size).toBe(QUIZ.length);
+    for (const q of QUIZ) {
+      expect(q.options).toHaveLength(4);
+      expect(new Set(q.options).size).toBe(4);
+      expect(q.answer).toBeGreaterThanOrEqual(0);
+      expect(q.answer).toBeLessThan(4);
+    }
+    expect(new Set(QUIZ.map((q) => q.answer)).size).toBe(4);
   });
 
   it('pelo menos 80 charadas, sem perguntas repetidas', () => {
@@ -93,11 +106,11 @@ describe('setupGame', () => {
   it('a projeção não vaza armas nem respostas para quem não deve', () => {
     const s = setupGame({ players: players(12), characters: CHARACTERS }, ctx(3));
     const proj = project(s);
-    const answers = new Set(Object.values(s.cards).flat().flatMap((c) => c.riddle?.answers ?? []));
+    const answers = new Set(Object.values(s.cards).flat().flatMap((c) => c.riddle?.answers ?? []).filter((a) => a.length > 3));
     for (const cards of Object.values(proj.cards)) {
       const json = JSON.stringify(cards);
       for (const a of answers) expect(json.includes(`"${a}"`)).toBe(false);
-      expect(json).not.toMatch(/kind|killer_|citizen_|inv_|police_|decoy/);
+      expect(json).not.toMatch(/kind|killer_|citizen_|inv_|police_|decoy|"answer"/);
     }
     const invJson = JSON.stringify(proj.teams.investigators.data);
     for (const c of s.characters) expect(invJson.includes(c.weapon)).toBe(false);

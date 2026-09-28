@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { setDb } from '@/lib/server/db';
+import { loadState, saveState } from '@/lib/server/persist';
 import * as H from '@/lib/server/handlers';
 
 const url = process.env.TEST_DATABASE_URL;
@@ -100,7 +101,7 @@ describe.skipIf(!url)('integração com Postgres', () => {
     const r1 = await H.tick(host, code);
     expect(r1.resolved).toBe(false);
     await pastEnd();
-    await expect(H.submitAction(host, code, { slot: 1, text: 'x', number: 1 })).rejects.toThrow(/tempo/);
+    await expect(H.submitAction(host, code, { slot: 1, text: 'x', choice: '1' })).rejects.toThrow(/tempo/);
     const results = await Promise.all([H.tick(host, code), H.tick(others[0], code), H.tick(others[1], code)]);
     expect(results.filter((r) => r.resolved)).toHaveLength(1);
     const [room] = await sql`select * from public.rooms where id = ${roomId}`;
@@ -113,7 +114,7 @@ describe.skipIf(!url)('integração com Postgres', () => {
 
   it('pausa e retoma', async () => {
     await H.pauseGame(host, code);
-    await expect(H.submitAction(host, code, { slot: 1, text: 'x', number: 1 })).rejects.toThrow(/pausada/);
+    await expect(H.submitAction(host, code, { slot: 1, text: 'x', choice: '1' })).rejects.toThrow(/pausada/);
     await pastEnd().catch(() => {});
     await sql`update public.rooms set ends_at = null where id = ${roomId}`;
     expect((await H.tick(host, code)).resolved).toBe(false);
@@ -160,32 +161,42 @@ describe.skipIf(!url)('integração com Postgres', () => {
 
   it('partida completa até o fim com ações de todos', async () => {
     const users = [host, ...others.slice(0, 9)];
+    let sawStandby = false;
     for (let guard = 0; guard < 40; guard++) {
       const [room] = await sql`select * from public.rooms where id = ${roomId}`;
       if (room.status === 'finished') break;
       for (const u of users) {
-        const cards = await asUser(u, (tx) => tx`select * from public.player_cards where room_id = ${roomId} order by slot`);
-        const [me] = await sql`select seat from public.players where user_id = ${u} and room_id = ${roomId}`;
-        for (const c of cards) {
-          if (c.status !== 'open') continue;
-          const n = ((me.seat + c.slot) % 10) + 1;
-          let text = `${n} e ${n + 1}`;
-          const weaponFor = /O que mata o número (\d+)\?/.exec(c.prompt);
-          if (weaponFor) {
-            // Assassino "trapaceia" consultando o estado oculto, para a partida terminar.
-            const [{ state }] = await sql`select state from game_private.game_state where room_id = ${roomId}`;
-            const victim = state.players.find((p: { seat: number }) => p.seat === Number(weaponFor[1]));
-            text = state.characters.find((ch: { id: string }) => ch.id === victim.characterId).weapon;
+        for (let pass = 0; pass < 4; pass++) {
+          const cards = await asUser(u, (tx) => tx`select * from public.player_cards where room_id = ${roomId} order by slot`);
+          for (const c of cards) {
+            if (c.status !== 'open' || c.round !== room.current_round) continue;
+            let choice: string | null = c.options?.[0]?.value ?? null;
+            const weaponFor = /O que mata o número (\d+)\?/.exec(c.prompt);
+            if (weaponFor) {
+              // Assassino "trapaceia" consultando o estado oculto, para a partida terminar.
+              const [{ state }] = await sql`select state from game_private.game_state where room_id = ${roomId}`;
+              const victim = state.players.find((p: { seat: number }) => p.seat === Number(weaponFor[1]));
+              choice = state.characters.find((ch: { id: string }) => ch.id === victim.characterId).weapon;
+            }
+            await H.submitAction(u, code, { slot: c.slot, choice, text: 'resposta' }).catch((e) => {
+              if (!/inválid|Não há|fora do jogo|concluída|primeiro|opções|alvos|Sabotagem/.test(e.message)) throw e;
+            });
           }
-          await H.submitAction(u, code, { slot: c.slot, number: c.fields === 'text' ? null : n, text }).catch(
-            (e) => {
-              if (!/inválid|Não há|fora do jogo|outro jogador|concluída|primeiro|Não existe/.test(e.message)) throw e;
-            },
-          );
         }
       }
       await pastEnd();
       await H.tick(host, code);
+      // Sabotagem pendente segura a virada: o sabotado responde e a rodada vira.
+      for (let i = 0; i < 3; i++) {
+        const [r] = await sql`select standby from public.rooms where id = ${roomId}`;
+        if (!r.standby) break;
+        sawStandby = true;
+        const [{ state }] = await sql`select state from game_private.game_state where room_id = ${roomId}`;
+        const pending = state.sabotages.find((x: { status: string }) => x.status === 'pending' || x.status === 'open');
+        const [target] = await sql`select user_id from public.players where id = ${pending.targetId}`;
+        await H.sabotageAction(target.user_id, code, { action: 'open' });
+        await H.sabotageAction(target.user_id, code, { action: 'answer', option: 0 });
+      }
     }
     const [room] = await sql`select * from public.rooms where id = ${roomId}`;
     expect(room.status).toBe('finished');
@@ -194,7 +205,10 @@ describe.skipIf(!url)('integração com Postgres', () => {
     expect(reveal).toHaveLength(10);
     const actions = await sql`select count(*)::int as n from game_private.actions where room_id = ${roomId}`;
     expect(actions[0].n).toBeGreaterThan(0);
-  }, 60_000);
+    const anns = await asUser(host, (tx) => tx`select kind from public.announcements where room_id = ${roomId}`);
+    expect(anns.some((a) => a.kind === 'targeted')).toBe(true);
+    void sawStandby;
+  }, 120_000);
 
   it('modo dev: bots e visualização', async () => {
     const devHost = randomUUID();
@@ -208,10 +222,58 @@ describe.skipIf(!url)('integração com Postgres', () => {
     const view = await H.devView(devHost, c, { playerId: bots[0].id });
     expect(view.secret).toBeTruthy();
     expect((view.cards as unknown[]).length).toBe(3);
-    await H.submitAction(devHost, c, { slot: 3, number: 1, text: 'teste', actAs: bots[0].id }).catch((e) => {
-      if (!/inválid|Não há|concluída|outro jogador|Informe|Digite/.test(e.message)) throw e;
+    await H.submitAction(devHost, c, { slot: 3, choice: '1', text: 'teste', actAs: bots[0].id }).catch((e) => {
+      if (!/inválid|Não há|concluída|opções|Digite/.test(e.message)) throw e;
     });
     const forced = await H.devForceEnd(devHost, c);
     expect(forced.resolved).toBe(true);
+  });
+  it('sabotagem: a virada espera a resposta e o alvo muda de pessoa', async () => {
+    const devHost = randomUUID();
+    const created = await H.createRoom(devHost, { name: 'Dev2', devMode: true });
+    const c = created.code as string;
+    const rid = created.roomId as string;
+    await H.devAddBots(devHost, c, { count: 9 });
+    await H.startGame(devHost, c);
+    // Vira para a rodada 2 e coloca um ataque em andamento num cidadão.
+    await H.devForceEnd(devHost, c);
+    let citizen: { id: string; seat: number } | undefined;
+    let victim: { id: string; seat: number } | undefined;
+    await sql.begin(async (tx) => {
+      const state = await loadState(tx, rid);
+      const citizens = state.players.filter((p) => p.role === 'citizen' && p.status === 'alive');
+      const cards = (id: string) => state.cards[id] ?? [];
+      citizen = citizens.find((p) => cards(p.id).some((x) => x.kind === 'citizen_check' && x.quiz));
+      victim = state.players.find((p) => p.status === 'alive' && p.id !== citizen!.id && p.role !== 'killer');
+      state.attacks.push({
+        id: 999, killerId: null, seat: citizen!.seat, side: null, weapon: null,
+        chosenRound: state.round - 1, resolvesAfterRound: state.round, sabotagedFrom: null,
+      });
+      await saveState(tx, rid, state);
+    });
+    const [{ state }] = await sql`select state from game_private.game_state where room_id = ${rid}`;
+    const card = state.cards[citizen!.id].find((x: { kind: string }) => x.kind === 'citizen_check');
+    const act = (body: Record<string, unknown>) => H.submitAction(devHost, c, { slot: card.slot, actAs: citizen!.id, ...body });
+    expect((await act({ text: card.riddle.answers[0] })).feedback).toMatch(/ESTÁ entre/);
+    await act({ choice: 'yes' });
+    await act({ choice: String(victim!.seat) });
+    await act({ choice: String(card.quiz[0].id) });
+    // Tempo acaba: a virada fica parada.
+    await sql`update public.rooms set ends_at = now() - interval '5 seconds' where id = ${rid}`;
+    expect((await H.tick(devHost, c)).resolved).toBe(false);
+    const [r1] = await sql`select standby, current_round from public.rooms where id = ${rid}`;
+    expect(r1.standby).toBe(true);
+    // Sabotado abre e erra: a rodada vira sozinha.
+    await H.sabotageAction(devHost, c, { action: 'open', actAs: victim!.id });
+    const wrong = (card.quiz[0].answer + 1) % 4;
+    expect((await H.sabotageAction(devHost, c, { action: 'answer', option: wrong, actAs: victim!.id })).correct).toBe(false);
+    const [r2] = await sql`select standby, current_round from public.rooms where id = ${rid}`;
+    expect(r2.standby).toBe(false);
+    expect(r2.current_round).toBe(r1.current_round + 1);
+    const statuses = await sql`select id, status from public.players where id in ${sql([citizen!.id, victim!.id])}`;
+    expect(statuses.find((p) => p.id === victim!.id)!.status).toBe('dead');
+    expect(statuses.find((p) => p.id === citizen!.id)!.status).toBe('alive');
+    const anns = await sql`select kind, seat from public.announcements where room_id = ${rid} and kind like 'sabotage%'`;
+    expect(anns).toEqual([{ kind: 'sabotage_ok', seat: citizen!.seat }]);
   });
 });

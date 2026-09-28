@@ -3,19 +3,23 @@ import { z } from 'zod';
 import {
   computeActingHost,
   cryptoRng,
+  answerSabotage,
   endGame,
+  expireSabotages,
   GameError,
   MAX_PLAYERS,
   MIN_PLAYERS,
   project,
+  openSabotage,
   resolveRound,
+  sabotageBlocking,
   setupGame,
   submitCard,
   type GameState,
 } from '@/lib/engine';
 import { db, json, type Tx } from './db';
 import { HttpError } from './errors';
-import { loadCharacters, loadRiddles, loadState, persistProjection, saveState } from './persist';
+import { loadCharacters, loadQuiz, loadRiddles, loadState, persistProjection, saveState } from './persist';
 
 // ------------------------------------------------------------------ tipos
 
@@ -32,6 +36,7 @@ export interface RoomRow {
   resolved_round: number;
   winner: string | null;
   dev_mode: boolean;
+  standby: boolean;
 }
 
 export interface PlayerRow {
@@ -145,6 +150,7 @@ async function applyStateToRoom(tx: Tx, room: RoomRow, state: GameState, now: nu
       resolved_round = ${finished ? state.round : state.round - 1},
       ends_at = ${endsAt},
       paused_remaining_ms = null,
+      standby = false,
       winner = ${state.winner}
     where id = ${room.id}`;
 }
@@ -309,10 +315,10 @@ export async function startGame(userId: string, code: string): Promise<Body> {
     if (players.length < MIN_PLAYERS || players.length > MAX_PLAYERS) {
       throw new HttpError(400, `São necessários de ${MIN_PLAYERS} a ${MAX_PLAYERS} jogadores (agora: ${players.length}).`);
     }
-    const [characters, riddles] = await Promise.all([loadCharacters(tx), loadRiddles(tx)]);
+    const [characters, riddles, quiz] = await Promise.all([loadCharacters(tx), loadRiddles(tx), loadQuiz(tx)]);
     const state = setupGame(
       { players: players.map((p) => ({ id: p.id, name: p.name })), characters },
-      { rng: cryptoRng(), riddles },
+      { rng: cryptoRng(), riddles, quiz, now },
     );
     await saveState(tx, room.id, state);
     await persistProjection(tx, room.id, null, project(state));
@@ -377,10 +383,19 @@ async function resolveIfDue(tx: Tx, room: RoomRow, now: number): Promise<boolean
   if (room.resolved_round >= room.current_round) return false;
   const state = await loadState(tx, room.id);
   if (state.round !== room.current_round || state.status !== 'playing') return false;
-  const riddles = await loadRiddles(tx);
-  const { state: next } = resolveRound(state, { rng: cryptoRng(), riddles });
+  const before = project(state);
+  expireSabotages(state, now);
+  // A rodada fica parada até o sabotado responder.
+  if (sabotageBlocking(state)) {
+    await saveState(tx, room.id, state);
+    await persistProjection(tx, room.id, before, project(state));
+    if (!room.standby) await tx`update public.rooms set standby = true where id = ${room.id}`;
+    return false;
+  }
+  const [riddles, quiz] = await Promise.all([loadRiddles(tx), loadQuiz(tx)]);
+  const { state: next } = resolveRound(state, { rng: cryptoRng(), riddles, quiz, now });
   await saveState(tx, room.id, next);
-  await persistProjection(tx, room.id, project(state), project(next));
+  await persistProjection(tx, room.id, before, project(next));
   await applyStateToRoom(tx, room, next, now);
   return true;
 }
@@ -400,57 +415,89 @@ export async function tick(userId: string, code: string): Promise<Body> {
 
 const actionSchema = z.object({
   slot: z.coerce.number().int().min(1).max(3),
-  number: z
-    .union([z.number(), z.string(), z.null()])
-    .optional()
-    .transform((v) => {
-      if (v === null || v === undefined || v === '') return null;
-      const n = Number(v);
-      return Number.isInteger(n) ? n : NaN;
-    }),
+  choice: z.union([z.string().max(100), z.number()]).nullish().transform((v) => (v === null || v === undefined ? null : String(v))),
   text: z.string().max(200, 'Resposta muito longa.').nullish(),
+  skip: z.boolean().optional(),
   actAs: z.string().uuid().nullish(),
 });
 
+/** Quem está agindo: o próprio jogador ou, no modo de teste, um bot controlado pelo host. */
+function resolveActor(room: RoomRow, players: PlayerRow[], me: PlayerRow, actAs: string | null | undefined): PlayerRow {
+  if (!actAs || actAs === me.id) return me;
+  const target = players.find((p) => p.id === actAs);
+  if (!devToolsEnabled() || !room.dev_mode || room.host_player_id !== me.id || !target?.is_bot) {
+    throw new HttpError(403, 'Ação não permitida.');
+  }
+  return target;
+}
+
+function engineCall<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (e) {
+    if (e instanceof GameError) throw new HttpError(400, e.message);
+    throw e;
+  }
+}
+
 export async function submitAction(userId: string, code: string, body: unknown): Promise<Body> {
   const input = parse(actionSchema, body);
-  if (Number.isNaN(input.number)) throw new HttpError(400, 'Número inválido.');
   const now = Date.now();
   return db().begin(async (tx) => {
     const room = await lockRoom(tx, code);
     const players = await roomPlayers(tx, room.id);
-    const me = findMe(players, userId);
-    let actor = me;
-    if (input.actAs && input.actAs !== me.id) {
-      const target = players.find((p) => p.id === input.actAs);
-      if (!devToolsEnabled() || !room.dev_mode || room.host_player_id !== me.id || !target?.is_bot) {
-        throw new HttpError(403, 'Ação não permitida.');
-      }
-      actor = target;
-    }
+    const actor = resolveActor(room, players, findMe(players, userId), input.actAs);
     if (room.status !== 'playing') throw new HttpError(409, 'A partida não está em andamento.');
     if (room.paused_remaining_ms !== null) throw new HttpError(409, 'A partida está pausada.');
     if (!isPlayingNow(room, now)) throw new HttpError(409, 'O tempo da rodada acabou.');
 
     const state = await loadState(tx, room.id);
     const before = project(state);
-    let feedback: string;
-    try {
-      feedback = submitCard(state, actor.id, input.slot, { number: input.number, text: input.text ?? null }, {
-        rng: cryptoRng(),
-        riddles: [],
-      });
-    } catch (e) {
-      if (e instanceof GameError) throw new HttpError(400, e.message);
-      throw e;
+    const payload = { choice: input.choice, text: input.text ?? null, skip: input.skip ?? false };
+    const feedback = engineCall(() =>
+      submitCard(state, actor.id, input.slot, payload, { rng: cryptoRng(), riddles: [], quiz: [], now }),
+    );
+    await saveState(tx, room.id, state);
+    await persistProjection(tx, room.id, before, project(state));
+    await tx`
+      insert into game_private.actions (room_id, round, player_id, slot, payload, feedback)
+      values (${room.id}, ${state.round}, ${actor.id}, ${input.slot}, ${json(tx, payload)}, ${feedback})`;
+    return ok({ feedback });
+  });
+}
+
+const sabotageSchema = z.object({
+  action: z.enum(['open', 'answer']),
+  option: z.coerce.number().int().min(0).max(3).optional(),
+  actAs: z.string().uuid().nullish(),
+});
+
+/** Sabotado abre a pergunta (inicia os 10 s) ou responde. Funciona mesmo com o tempo da rodada esgotado. */
+export async function sabotageAction(userId: string, code: string, body: unknown): Promise<Body> {
+  const input = parse(sabotageSchema, body);
+  const now = Date.now();
+  return db().begin(async (tx) => {
+    const room = await lockRoom(tx, code);
+    const players = await roomPlayers(tx, room.id);
+    const actor = resolveActor(room, players, findMe(players, userId), input.actAs);
+    if (room.status !== 'playing') throw new HttpError(409, 'A partida não está em andamento.');
+    const state = await loadState(tx, room.id);
+    const before = project(state);
+    let correct: boolean | null = null;
+    if (input.action === 'open') engineCall(() => openSabotage(state, actor.id, now));
+    else {
+      if (input.option === undefined) throw new HttpError(400, 'Escolha uma opção.');
+      correct = engineCall(() => answerSabotage(state, actor.id, input.option!, now));
     }
     await saveState(tx, room.id, state);
     await persistProjection(tx, room.id, before, project(state));
     await tx`
       insert into game_private.actions (room_id, round, player_id, slot, payload, feedback)
-      values (${room.id}, ${state.round}, ${actor.id}, ${input.slot},
-              ${json(tx, { number: input.number, text: input.text ?? null })}, ${feedback})`;
-    return ok({ feedback });
+      values (${room.id}, ${state.round}, ${actor.id}, 0, ${json(tx, { sabotage: input.action, option: input.option ?? null })},
+              ${correct === null ? null : correct ? 'acertou' : 'errou'})`;
+    // Se a rodada estava parada esperando esta resposta, vira agora.
+    if (correct !== null) await resolveIfDue(tx, room, now);
+    return ok({ correct });
   });
 }
 
@@ -535,6 +582,7 @@ export const ROOM_OPS: Record<string, (userId: string, code: string, body: unkno
   end: (u, c) => endRoom(u, c),
   tick: (u, c) => tick(u, c),
   action: submitAction,
+  sabotage: sabotageAction,
   'rejoin-code': createRejoinCode,
   'dev-bots': devAddBots,
   'dev-view': devView,

@@ -1,4 +1,4 @@
-import type { Arc, GamePlayer, GameState, Target } from './types';
+import type { Arc, GamePlayer, GameState, Side } from './types';
 
 /** Próximo assento no sentido horário (N → 1). */
 export function cw(seat: number, n: number): number {
@@ -18,25 +18,34 @@ export function inArc(arc: Arc, seat: number, n: number): boolean {
 }
 
 /**
- * Candidatos fora do arco: L1, L2 (anti-horário a partir de L) e
- * R1, R2 (horário a partir de R), pulando quem não está vivo.
+ * Candidatos fora do arco a partir de uma ponta: L (anti-horário a partir de L)
+ * ou R (horário a partir de R), pulando quem não está vivo e os já tomados.
  */
-export function sideCandidates(
+export function walkSide(
   arc: Arc,
   n: number,
-  isAlive: (seat: number) => boolean,
-  count = 2,
-): { L: number[]; R: number[] } {
-  const walk = (start: number, step: (s: number, n: number) => number): number[] => {
-    const out: number[] = [];
-    let s = step(start, n);
-    for (let i = 0; i < n && out.length < count; i++, s = step(s, n)) {
-      if (inArc(arc, s, n)) break;
-      if (isAlive(s)) out.push(s);
-    }
-    return out;
-  };
-  return { L: walk(arc.l, ccw), R: walk(arc.r, cw) };
+  side: Side,
+  isFree: (seat: number) => boolean,
+  count = 1,
+): number[] {
+  const step = side === 'L' ? ccw : cw;
+  const out: number[] = [];
+  let s = step(side === 'L' ? arc.l : arc.r, n);
+  for (let i = 0; i < n && out.length < count; i++, s = step(s, n)) {
+    if (inArc(arc, s, n)) break;
+    if (isFree(s)) out.push(s);
+  }
+  return out;
+}
+
+/** Estende o arco para cobrir um assento marcado, pelo lado indicado (ou o mais próximo). */
+export function extendArc(arc: Arc | null, seat: number, side: Side | null, n: number): Arc {
+  if (!arc) return { l: seat, r: seat };
+  if (inArc(arc, seat, n)) return arc;
+  const dl = (arc.l - seat + n) % n;
+  const dr = (seat - arc.r + n) % n;
+  const useLeft = side ? side === 'L' : dl <= dr;
+  return useLeft ? { l: seat, r: arc.r } : { l: arc.l, r: seat };
 }
 
 export function aliveKillers(players: readonly GamePlayer[]): GamePlayer[] {
@@ -45,70 +54,66 @@ export function aliveKillers(players: readonly GamePlayer[]): GamePlayer[] {
     .sort((a, b) => (a.killerSlot ?? 'Z').localeCompare(b.killerSlot ?? 'Z'));
 }
 
-function seatAlive(state: GameState) {
-  const bySeat = new Map(state.players.map((p) => [p.seat, p]));
-  return (seat: number) => bySeat.get(seat)?.status === 'alive';
+function isAliveSeat(state: GameState, seat: number): boolean {
+  return state.players.some((p) => p.seat === seat && p.status === 'alive');
+}
+
+/** Assentos que já estão com algum assassino (ataques em andamento, reservados, congelados nesta rodada). */
+function takenSeats(state: GameState): Set<number> {
+  const taken = new Set<number>(state.attacks.map((a) => a.seat));
+  for (const t of Object.values(state.killerTargets)) if (t) taken.add(t.seat);
+  for (const p of Object.values(state.killerPlans)) if (p.seat !== null) taken.add(p.seat);
+  return taken;
+}
+
+export function firstCandidate(state: GameState, side: Side, taken: Set<number>): number | null {
+  if (!state.arc) return null;
+  const n = state.players.length;
+  return walkSide(state.arc, n, side, (s) => isAliveSeat(state, s) && !taken.has(s))[0] ?? null;
 }
 
 /**
- * Combinações de alvos disponíveis para os assassinos nesta rodada (rodada 2+).
- * A primeira opção é o padrão usado se ninguém escolher.
+ * Alvo provisório de cada assassino nesta rodada.
+ * Congelado (arma já escolhida) > alvo guardado > lado escolhido.
+ * Com os dois no mesmo lado, o A fica com o mais próximo e o B com o seguinte.
  */
-export function targetOptions(state: GameState): Target[][] {
+export function tentativeTargets(state: GameState): Record<string, { seat: number; side: Side | null }> {
+  const out: Record<string, { seat: number; side: Side | null }> = {};
   const killers = aliveKillers(state.players);
-  const slots = Math.min(killers.length, 2);
-  if (slots === 0 || !state.arc) return [];
-  const n = state.players.length;
-  const alive = seatAlive(state);
-  const pending: Target[] = state.pending.filter(alive).map((seat) => ({ seat, side: 'P' }));
-  const { L, R } = sideCandidates(state.arc, n, alive);
-  const l = (i: number): Target | undefined => (L[i] !== undefined ? { seat: L[i], side: 'L' } : undefined);
-  const r = (i: number): Target | undefined => (R[i] !== undefined ? { seat: R[i], side: 'R' } : undefined);
-
-  let raw: (Target | undefined)[][];
-  if (slots === 2) {
-    if (pending.length >= 2) raw = [[pending[0], pending[1]]];
-    else if (pending.length === 1) raw = [[pending[0], l(0)], [pending[0], r(0)]];
-    else raw = [[l(0), r(0)], [l(0), l(1)], [r(0), r(1)]];
-  } else {
-    if (pending.length >= 1) raw = pending.map((p) => [p]);
-    else raw = [[l(0)], [r(0)]];
+  const taken = takenSeats(state);
+  for (const k of killers) {
+    const plan = state.killerPlans[k.id];
+    const saved = state.killerTargets[k.id];
+    if (plan?.seat != null) out[k.id] = { seat: plan.seat, side: plan.side };
+    else if (saved) out[k.id] = { seat: saved.seat, side: saved.side };
   }
-
-  const seen = new Set<string>();
-  const out: Target[][] = [];
-  for (const opt of raw) {
-    const clean: Target[] = [];
-    for (const t of opt) {
-      if (t && !clean.some((c) => c.seat === t.seat)) clean.push(t);
+  for (const k of killers) {
+    if (out[k.id]) continue;
+    const plan = state.killerPlans[k.id];
+    if (!plan?.side) continue;
+    const seat = firstCandidate(state, plan.side, taken);
+    if (seat !== null) {
+      out[k.id] = { seat, side: plan.side };
+      taken.add(seat);
     }
-    if (!clean.length) continue;
-    const key = clean.map((t) => t.seat).sort((a, b) => a - b).join(',');
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(clean);
   }
   return out;
 }
 
-/** Estende o arco para cobrir os alvos escolhidos (acertando ou errando). */
-export function extendArc(arc: Arc, targets: readonly Target[], n: number): Arc {
-  const next = { ...arc };
-  const ccwDist = (t: number) => (arc.l - t + n) % n;
-  const cwDist = (t: number) => (t - arc.r + n) % n;
-  const left = targets.filter((t) => t.side === 'L' && !inArc(arc, t.seat, n));
-  const right = targets.filter((t) => t.side === 'R' && !inArc(arc, t.seat, n));
-  if (left.length) next.l = left.reduce((a, b) => (ccwDist(b.seat) > ccwDist(a.seat) ? b : a)).seat;
-  if (right.length) next.r = right.reduce((a, b) => (cwDist(b.seat) > cwDist(a.seat) ? b : a)).seat;
-  return next;
+/** Para a tela "Esquerda ou direita?": qual número o assassino pegaria em cada lado agora. */
+export function sideChoices(state: GameState, killerId: string): { side: Side; seat: number }[] {
+  const out: { side: Side; seat: number }[] = [];
+  for (const side of ['L', 'R'] as const) {
+    const sim: GameState = {
+      ...state,
+      killerPlans: { ...state.killerPlans, [killerId]: { side, seat: null, done: false, summary: null } },
+      killerTargets: { ...state.killerTargets, [killerId]: null },
+    };
+    const t = tentativeTargets(sim)[killerId];
+    if (t) out.push({ side, seat: t.seat });
+  }
+  // Se os dois lados apontam para a mesma pessoa, basta uma opção.
+  return out.length === 2 && out[0].seat === out[1].seat ? [out[0]] : out;
 }
 
-/** Distribui os alvos: alvo 1 → Assassino A, alvo 2 → Assassino B. Sozinho: ele fica com o único alvo. */
-export function assignTargets(state: GameState, targets: readonly Target[]): { killerId: string; seat: number }[] {
-  const killers = aliveKillers(state.players);
-  return targets.slice(0, killers.length).map((t, i) => ({ killerId: killers[i].id, seat: t.seat }));
-}
-
-export function formatOption(opt: readonly Target[]): string {
-  return opt.map((t) => t.seat).join(' e ');
-}
+export const SIDE_LABEL: Record<Side, string> = { L: 'Esquerda', R: 'Direita' };

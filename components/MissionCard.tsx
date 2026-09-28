@@ -6,32 +6,37 @@ import type { CardRow } from '@/lib/client/types';
 
 /** Card uniforme: mesma aparência para ações reais e tarefas decorativas. */
 export function MissionCard({ code, card, locked, actAs }: { code: string; card: CardRow; locked: boolean; actAs: string | null }) {
-  const [number, setNumber] = useState('');
+  const [choice, setChoice] = useState('');
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const needsNumber = card.fields !== 'text';
-  const needsText = card.fields !== 'number';
+  const needsChoice = card.fields !== 'text';
+  const needsText = card.fields !== 'choice';
+  const options = card.options ?? [];
+  const asButtons = card.fields === 'choice' && options.length <= 4;
   const open = card.status === 'open' && !locked;
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  async function send(payload: { choice?: string | null; text?: string | null; skip?: boolean }) {
     setBusy(true);
     setError(null);
     try {
-      await roomApi(code, 'action', {
-        slot: card.slot,
-        number: needsNumber ? number : null,
-        text: needsText ? text : null,
-        actAs,
-      });
-      setNumber('');
+      await roomApi(code, 'action', { slot: card.slot, actAs, ...payload });
+      setChoice('');
       setText('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao enviar.');
     } finally {
       setBusy(false);
     }
+  }
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (needsChoice && !choice) {
+      setError('Escolha uma opção.');
+      return;
+    }
+    send({ choice: needsChoice ? choice : null, text: needsText ? text : null });
   }
 
   return (
@@ -44,37 +49,61 @@ export function MissionCard({ code, card, locked, actAs }: { code: string; card:
 
       {card.status === 'open' && (
         <form onSubmit={submit} className="mt-3 flex flex-col gap-2">
-          <div className="flex gap-2">
-            {needsNumber && (
-              <input
-                className={`input ${needsText ? 'w-24 shrink-0' : ''} text-center`}
-                value={number}
-                onChange={(e) => setNumber(e.target.value.replace(/\D/g, '').slice(0, 2))}
-                inputMode="numeric"
-                placeholder="Nº"
-                aria-label="Número do jogador"
-                disabled={!open || busy}
-                required
-              />
-            )}
-            {needsText && (
-              <input
-                className="input"
-                value={text}
-                onChange={(e) => setText(e.target.value.slice(0, 200))}
-                placeholder="Sua resposta"
-                aria-label="Resposta"
-                autoComplete="off"
-                autoCorrect="off"
-                spellCheck={false}
-                disabled={!open || busy}
-                required
-              />
-            )}
-          </div>
+          {needsChoice && asButtons && (
+            <div className="grid grid-cols-1 gap-2">
+              {options.map((o) => (
+                <button
+                  key={o.value}
+                  type="button"
+                  disabled={!open || busy}
+                  onClick={() => setChoice(o.value)}
+                  className={`rounded-xl border px-4 py-3 text-left text-sm font-medium transition ${
+                    choice === o.value ? 'border-accent bg-accent/15 text-white' : 'border-ink-600 bg-ink-950 text-zinc-200'
+                  }`}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {needsChoice && !asButtons && (
+            <select
+              className="input"
+              value={choice}
+              onChange={(e) => setChoice(e.target.value)}
+              disabled={!open || busy}
+              aria-label="Escolha"
+            >
+              <option value="">Escolha…</option>
+              {options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          )}
+          {needsText && (
+            <input
+              className="input"
+              value={text}
+              onChange={(e) => setText(e.target.value.slice(0, 200))}
+              placeholder="Sua resposta"
+              aria-label="Resposta"
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+              disabled={!open || busy}
+              required
+            />
+          )}
           <button className="btn-primary" disabled={!open || busy}>
             {busy ? 'Enviando…' : 'Enviar'}
           </button>
+          {card.skip_label && (
+            <button type="button" className="btn-ghost" disabled={!open || busy} onClick={() => send({ skip: true })}>
+              {card.skip_label}
+            </button>
+          )}
         </form>
       )}
 

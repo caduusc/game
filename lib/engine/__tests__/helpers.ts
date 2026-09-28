@@ -1,12 +1,13 @@
 import { CHARACTERS } from '../data/characters';
+import { QUIZ } from '../data/quiz';
 import { RIDDLES } from '../data/riddles';
 import { generateHints } from '../hints';
 import { seededRng } from '../rng';
 import { startRound } from '../setup';
 import type { EngineContext, GamePlayer, GameState, Role } from '../types';
 
-export function ctx(seed = 1): EngineContext {
-  return { rng: seededRng(seed), riddles: RIDDLES };
+export function ctx(seed = 1, now = 1_000_000): EngineContext {
+  return { rng: seededRng(seed), riddles: RIDDLES, quiz: QUIZ, now };
 }
 
 /**
@@ -15,7 +16,7 @@ export function ctx(seed = 1): EngineContext {
  */
 export function makeState(
   roles: Role[],
-  opts: { round?: number; dead?: number[]; arc?: { l: number; r: number } | null; pending?: number[]; cards?: boolean } = {},
+  opts: { round?: number; dead?: number[]; arc?: { l: number; r: number } | null; cards?: boolean } = {},
 ): GameState {
   const characters = CHARACTERS.slice(0, roles.length);
   let k = 0;
@@ -32,6 +33,7 @@ export function makeState(
   const b = players.find((p) => p.killerSlot === 'B');
   const charOf = (p?: GamePlayer) => characters.find((c) => c.id === p?.characterId) ?? characters[0];
   const state: GameState = {
+    version: 2,
     round: opts.round ?? 1,
     status: 'playing',
     winner: null,
@@ -39,10 +41,12 @@ export function makeState(
     characters,
     citizenVerifyUses: 1,
     arc: opts.arc ?? null,
-    pending: opts.pending ?? [],
-    initialTarget: null,
-    choice: null,
-    weaponAnswers: {},
+    initialPicks: Object.fromEntries(players.filter((p) => p.role === 'killer').map((p) => [p.id, null])),
+    attacks: [],
+    nextAttackId: 1,
+    killerTargets: {},
+    killerPlans: {},
+    policeShotsLeft: Object.fromEntries(players.filter((p) => p.role === 'police').map((p) => [p.id, 2])),
     policeShots: [],
     accusations: [],
     investigation: {
@@ -59,8 +63,9 @@ export function makeState(
     citizens: Object.fromEntries(
       players
         .filter((p) => p.role === 'citizen')
-        .map((p) => [p.id, { checkUses: 2, verifyUses: 1, lastCheckRound: null, lastVerifyRound: null }]),
+        .map((p) => [p.id, { checkUses: 2, verifyUses: 1, sabotageUsed: false, lastCheckRound: null, lastVerifyRound: null }]),
     ),
+    sabotages: [],
     cards: {},
     results: {},
     announcements: [],
@@ -82,11 +87,25 @@ export function twentyRoles(): Role[] {
   return r;
 }
 
-export function seats(opts: { seat: number }[][]): number[][] {
-  return opts.map((o) => o.map((t) => t.seat));
-}
-
 export function weaponOf(state: GameState, seat: number): string {
   const p = state.players.find((x) => x.seat === seat)!;
   return state.characters.find((c) => c.id === p.characterId)!.weapon;
+}
+
+export function bySeat(state: GameState, seat: number) {
+  return state.players.find((p) => p.seat === seat)!;
+}
+
+/** Ataque em andamento criado direto no estado. */
+export function addAttack(state: GameState, seat: number, killerId: string | null, weapon: string | null, resolvesAfterRound = state.round) {
+  state.attacks.push({
+    id: state.nextAttackId++,
+    killerId,
+    seat,
+    side: null,
+    weapon,
+    chosenRound: resolvesAfterRound - 1,
+    resolvesAfterRound,
+    sabotagedFrom: null,
+  });
 }

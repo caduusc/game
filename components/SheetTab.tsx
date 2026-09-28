@@ -6,11 +6,13 @@ import type { PrivateData } from '@/lib/client/types';
 
 const ROLE_HELP: Record<string, string> = {
   killer:
-    'Rodada 1: escolham o alvo inicial. Depois, escolham os alvos entre as opções do arco e digitem a arma que mata cada um. Alvo 1 fica com o Assassino A, alvo 2 com o B.',
+    'Rodada 1: os dois escolhem juntos o alvo inicial (precisa ser a mesma pessoa). Depois, cada um escolhe esquerda ou direita e a arma. Todo alvo escolhido numa rodada morre só na virada da rodada seguinte.',
   investigator:
     'Respondam as perguntas de pista para liberar as dicas sobre os assassinos. Uma verificação por rodada para a equipe. Cada um tem 1 acusação no jogo.',
-  police: 'A partir da rodada 2, escolha um número e acerte a charada: o alvo morre na virada. Você não conhece ninguém, nem os outros policiais.',
-  citizen: 'Use suas charadas para checar se você é alvo e para verificar identidades. Converse, deduza e ajude a encontrar os assassinos.',
+  police:
+    'Você tem 2 tiros no jogo, a partir da rodada 2. Escolha o alvo e acerte a charada (3 tentativas): o alvo morre na virada. Pode também não atirar. Você não conhece ninguém, nem os outros policiais.',
+  citizen:
+    'Use suas charadas para checar se você é alvo e para verificar identidades. Se descobrir que é alvo, pode sabotar uma vez: passar o alvo para outra pessoa, se ela errar uma pergunta.',
   maniac: 'Você joga sozinho e vence se morrer por assassino ou policial. Sua vitória não encerra o jogo.',
 };
 
@@ -50,9 +52,12 @@ export function SheetTab({ priv, viewerId, roomId }: { priv: PrivateData; viewer
           <ul className="text-sm text-zinc-300">
             <li>Checar alvo: {s.data.checkUses ?? 0} uso(s) restante(s)</li>
             <li>Verificar identidade: {s.data.verifyUses ?? 0} uso(s) restante(s)</li>
+            <li>Sabotagem: {s.data.sabotageUsed ? 'usada' : 'disponível (quando você for alvo)'}</li>
           </ul>
         )}
-        {s.role === 'police' && <p className="text-sm text-zinc-300">Você não conhece a identidade de ninguém.</p>}
+        {s.role === 'police' && (
+          <p className="text-sm text-zinc-300">Tiros restantes: {s.data.policeShotsLeft ?? 0} de 2. Você não conhece a identidade de ninguém.</p>
+        )}
         {s.role === 'maniac' && (
           <p className="text-sm text-zinc-300">{s.data.maniacWon ? 'Você já venceu! Continue em silêncio.' : 'Ainda não venceu.'}</p>
         )}
@@ -94,20 +99,35 @@ function KillersInfo({ team }: { team: KillersTeamView }) {
       </div>
       <div>
         <p className="font-semibold text-zinc-200">Alvos</p>
-        {team.round === 1 ? (
-          <p className="text-zinc-300">Alvo inicial: {team.initialTarget ? `nº ${team.initialTarget}` : 'não escolhido (o app sorteia)'}</p>
-        ) : (
-          <div className="text-zinc-300">
-            <p>Opções: {team.options.length ? team.options.join(' · ') : 'nenhuma'}</p>
-            <p>Escolha: {team.choice ?? `nenhuma (vale ${team.options[0] ?? '—'})`}</p>
-            {team.assignments.map((a) => (
-              <p key={a.slot}>
-                Assassino {a.slot} → nº {a.seat} {a.answered ? '(arma enviada)' : ''}
+        <div className="text-zinc-300">
+          {team.round === 1 &&
+            team.initialPicks.map((p) => (
+              <p key={p.slot}>
+                Assassino {p.slot} escolheu: {p.seat ? `nº ${p.seat}` : '—'}
               </p>
             ))}
-            {team.pending.length > 0 && <p>Obrigatórios: {team.pending.map((p) => `nº ${p}`).join(', ')}</p>}
-          </div>
-        )}
+          {team.plans.map((p) => (
+            <p key={p.slot}>
+              Assassino {p.slot}: {p.text}
+            </p>
+          ))}
+          {team.saved.map((t) => (
+            <p key={t.slot}>
+              Assassino {t.slot} tem alvo {t.kind === 'obligatory' ? 'obrigatório' : 'reservado'}: nº {t.seat}
+            </p>
+          ))}
+          {team.attacks.length > 0 && (
+            <>
+              <p className="mt-2 font-semibold text-zinc-200">Ataques em andamento</p>
+              {team.attacks.map((a, i) => (
+                <p key={i}>
+                  nº {a.seat} {a.weapon ? `com ${a.weapon}` : '(alvo inicial)'}
+                  {a.slot ? ` · Assassino ${a.slot}` : ''} — virada para a rodada {a.diesOnTurnTo}
+                </p>
+              ))}
+            </>
+          )}
+        </div>
       </div>
       <div>
         <p className="font-semibold text-zinc-200">Personagens em jogo e armas</p>

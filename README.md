@@ -122,7 +122,8 @@ O Postgres Changes aplica o RLS por assinante. Além disso, o cliente recarrega 
    - **SQL Editor, arquivo por arquivo:** execute, nesta ordem, o conteúdo de:
      1. `supabase/migrations/20260927000001_schema.sql`
      2. `supabase/migrations/20260927000002_rls_realtime.sql`
-     3. `supabase/seed.sql` (24 personagens e 92 charadas)
+     3. `supabase/migrations/20260928000003_rules_v2.sql`
+     4. `supabase/seed.sql` (24 personagens, 92 charadas e 82 perguntas de múltipla escolha)
    - **Supabase CLI:**
      ```bash
      npx supabase login
@@ -130,6 +131,8 @@ O Postgres Changes aplica o RLS por assinante. Além disso, o cliente recarrega 
      npx supabase db push             # aplica as migrations
      npx supabase db push --include-seed   # ou rode supabase/seed.sql no SQL Editor
      ```
+
+   **Projeto já instalado antes das regras v2?** Rode no SQL Editor só `supabase/migrations/20260928000003_rules_v2.sql` e depois `supabase/seed.sql`. Os dois podem ser executados mais de uma vez. Partidas em andamento no formato antigo são encerradas sem vencedor.
 
 4. **Confirme o Realtime:**
    - em **Database → Publications**, a publicação `supabase_realtime` deve listar as 8 tabelas acima. A migration já faz isso, mas vale conferir;
@@ -263,16 +266,19 @@ Com isso, dá para jogar uma partida inteira sozinho em um navegador.
 Implementadas conforme o enunciado e os ajustes combinados:
 
 - **Banco de personagens:** Bertha Lutz (arma **Mel**) substitui Chiquinha Gonzaga. Cada combinação de gênero, origem e século tem 3 personagens com áreas distintas, e as armas são únicas.
-- **Arco:** é um intervalo contíguo de L até R, que cresce para cobrir cada alvo escolhido, acertando ou errando.
-  - Mortos são pulados.
-  - Mortes por policial e prisões não mexem no arco.
-  - Alvo que sobrevive vira obrigatório. Um obrigatório que morre por outra causa sai da lista de pendentes.
-- **Assassino sozinho:** tem 1 alvo por rodada. Com 2 pendentes, escolhe um deles.
-- **Sem escolha na rodada 2 em diante:** vale (L1, R1), ou a combinação com o pendente. O card de arma já mostra esse alvo padrão, e responder a arma trava a escolha.
-- **Tentativas:** 1 por rodada para cada arma de assassino e para o tiro de cada policial. O resultado só aparece na virada.
+- **Assassinos: alvo com atraso de 2 viradas.** O alvo escolhido na rodada X é anunciado na virada X → X+1 ("Os assassinos escolheram um alvo", sem dizer quem) e só morre na virada X+1 → X+2.
+  - **Rodada 1:** os dois escolhem o alvo inicial numa lista. Só vale se escolherem a mesma pessoa; enquanto divergirem, aparece a mensagem pedindo acordo. Sem acordo no fim da rodada, o app sorteia alguém que não seja assassino. O alvo inicial morre sem arma.
+  - **Rodada 2 em diante:** cada assassino escolhe "Esquerda" ou "Direita" a partir das pontas do arco e depois a arma numa lista (com "Não sabemos ainda"). Os dois no mesmo lado: o A pega o mais próximo e o B o seguinte (com o 6 como inicial: esquerda/esquerda = 5 e 4; direita/direita = 7 e 8; um de cada = 5 e 7).
+  - **Arma errada:** o alvo sobrevive e fica obrigatório para o mesmo assassino na rodada seguinte (só escolhe a arma).
+  - **"Não sabemos ainda":** o alvo fica reservado para a próxima rodada; o assassino pode trocar de lado.
+  - **Arco:** cobre todos os alvos marcados (em andamento, reservados ou obrigatórios). Mortos são pulados; mortes por policial, prisões e sabotagens não mexem no arco. Assassino sozinho escolhe um lado por rodada.
+  - Ataques em andamento continuam valendo mesmo que o assassino morra ou seja preso.
+- **Policial:** 2 tiros no jogo, a partir da rodada 2. Escolhe o alvo numa lista e responde uma charada com até 3 tentativas; errar as 3 gasta o tiro. O botão "Não atirar nesta rodada" não gasta nada. O tiro da rodada X mata na virada X → X+1.
 - **Cidadão:**
-  - **Checar alvo:** no máximo 1 uso por rodada; na rodada 1 vale o alvo inicial. Se os assassinos ainda não escolheram, o app avisa e não gasta o uso.
+  - **Checar alvo:** no máximo 1 uso por rodada. "Alvos atuais" são os ataques que resolvem na próxima virada. Sem ataques em andamento, o app avisa e não gasta o uso.
+  - **Sabotagem (1 vez no jogo):** quem descobre que é alvo pode escolher outro jogador vivo e uma entre 3 perguntas de múltipla escolha. O escolhido recebe o aviso de que terá 10 segundos; ao abrir, responde uma pergunta com 4 opções. Errou ou o tempo acabou: o alvo passa para ele e ele morre na virada no lugar do cidadão, independente da arma. Acertou: o alvo continua no cidadão. A rodada só vira depois da resposta. Na virada, todos veem "Houve uma sabotagem e o nº X tirou o alvo dele e colocou em outra pessoa" ou "Houve uma tentativa de sabotagem, mas falhou". Os assassinos não ficam sabendo da troca.
   - **Verificar identidade:** errar a charada não gasta o uso.
+- **Tela uniforme:** todos os papéis e as tarefas decorativas usam texto, listas e botões, para ninguém deduzir papéis pelo tipo de tela.
 - **Vitória:** a condição dos assassinos considera os assassinos vivos **no início** da virada, porque as ações deles valem mesmo se caírem na mesma virada. Por isso a regra de empate funciona: se na mesma virada o último assassino é preso e o último cidadão morre, os assassinos vencem.
 - **Acusado que também leva tiro:** é anunciado como morto.
 - **Respostas:** o app ignora acentos, caixa, pontuação e artigo inicial ("o pente" vale "pente"). Aceita distância de Levenshtein até 1, ou até 2 para respostas com mais de 8 caracteres.
@@ -296,7 +302,7 @@ lib/engine/__tests__/          testes Vitest do motor
 lib/server/                    conexão Postgres, auth, handlers, persistência das projeções
 lib/client/                    Supabase client, API, relógio, hooks de sala
 supabase/migrations/           esquema, RLS e Realtime
-supabase/seed.sql              personagens + charadas (gerado)
+supabase/seed.sql              personagens, charadas e perguntas de múltipla escolha (gerado)
 supabase/setup.sql             migrations + seed num arquivo só, para o SQL Editor (gerado)
 scripts/generate-seed.ts       gera os seeds a partir de lib/engine/data
 tests/                         integração com Postgres + stub do Supabase

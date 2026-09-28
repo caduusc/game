@@ -1,5 +1,5 @@
-import { assignTargets, formatOption, targetOptions } from './arc';
-import { CARDS_PER_ROUND, characterOf, renderCard, type CardView } from './cards';
+import { SIDE_LABEL, tentativeTargets } from './arc';
+import { CARDS_PER_ROUND, characterOf, renderCard, sabotageView, type CardView } from './cards';
 import type { Announcement, GamePlayer, GameState, KillerSlot, PlayerStatus, PrivateResult, Role } from './types';
 
 export const ROLE_LABEL: Record<Role, string> = {
@@ -35,6 +35,10 @@ export interface SecretData {
   verifyUses?: number;
   accusationUsed?: boolean;
   maniacWon?: boolean;
+  policeShotsLeft?: number;
+  sabotageUsed?: boolean;
+  /** Sabotagem recebida, aguardando resposta. */
+  sabotage?: ReturnType<typeof sabotageView>;
 }
 
 export interface SecretView {
@@ -48,12 +52,10 @@ export interface KillersTeamView {
   members: { name: string; seat: number; slot: KillerSlot; status: PlayerStatus }[];
   characters: { name: string; weapon: string }[];
   round: number;
-  initialTarget: number | null;
-  options: string[];
-  choice: string | null;
-  locked: boolean;
-  assignments: { slot: KillerSlot; seat: number; answered: boolean }[];
-  pending: number[];
+  initialPicks: { slot: KillerSlot; seat: number | null }[];
+  plans: { slot: KillerSlot; text: string }[];
+  attacks: { slot: KillerSlot | null; seat: number; weapon: string | null; diesOnTurnTo: number }[];
+  saved: { slot: KillerSlot; seat: number; kind: 'reserved' | 'obligatory' }[];
 }
 
 export interface InvestigatorsTeamView {
@@ -110,6 +112,8 @@ function goneCards(round: number): CardView[] {
     title: `Missão ${i + 1}`,
     prompt: '',
     fields: 'text' as const,
+    options: null,
+    skipLabel: null,
     status: 'gone' as const,
     feedback: null,
   }));
@@ -132,6 +136,9 @@ export function project(state: GameState): Projection {
     }
     if (p.role === 'investigator') data.accusationUsed = state.accusations.some((a) => a.by === p.id);
     if (p.role === 'maniac') data.maniacWon = state.maniacWon.includes(p.id);
+    if (p.role === 'police') data.policeShotsLeft = state.policeShotsLeft[p.id] ?? 0;
+    if (p.role === 'citizen') data.sabotageUsed = state.citizens[p.id]?.sabotageUsed ?? false;
+    data.sabotage = sabotageView(state, p.id, true);
     secrets[p.id] = { role: p.role, roleLabel: ROLE_LABEL[p.role], characterName: characterOf(state, p).name, data };
 
     const own = state.cards[p.id] ?? [];
@@ -143,26 +150,38 @@ export function project(state: GameState): Projection {
   const killers = state.players.filter((p) => p.role === 'killer');
   const investigators = state.players.filter((p) => p.role === 'investigator');
 
-  const options = state.round >= 2 && state.status === 'playing' ? targetOptions(state) : [];
-  const killerIdToSlot = new Map(killers.map((k) => [k.id, k.killerSlot!]));
+  const slotOf = new Map(killers.map((k) => [k.id, k.killerSlot!]));
+  const tentative = state.status === 'playing' ? tentativeTargets(state) : {};
   const killersView: KillersTeamView = {
     members: killers.map((k) => ({ name: k.name, seat: k.seat, slot: k.killerSlot!, status: k.status })),
     characters: state.characters
       .map((c) => ({ name: c.name, weapon: c.weapon }))
       .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')),
     round: state.round,
-    initialTarget: state.initialTarget,
-    options: options.map(formatOption),
-    choice: state.choice ? formatOption(state.choice) : null,
-    locked: Object.keys(state.weaponAnswers).length > 0,
-    assignments: state.choice
-      ? assignTargets(state, state.choice).map((a) => ({
-          slot: killerIdToSlot.get(a.killerId)!,
-          seat: a.seat,
-          answered: Boolean(state.weaponAnswers[String(a.seat)]),
-        }))
-      : [],
-    pending: state.pending,
+    initialPicks: killers.map((k) => ({ slot: k.killerSlot!, seat: state.initialPicks[k.id] ?? null })),
+    plans: killers
+      .filter((k) => k.status === 'alive' && state.round >= 2)
+      .map((k) => {
+        const plan = state.killerPlans[k.id];
+        const saved = state.killerTargets[k.id];
+        const t = tentative[k.id];
+        let text: string;
+        if (plan?.done) text = plan.summary ?? 'ação registrada';
+        else if (saved) text = `alvo ${saved.kind === 'obligatory' ? 'obrigatório' : 'reservado'} nº ${saved.seat}, falta escolher a arma`;
+        else if (plan?.side && t) text = `${SIDE_LABEL[plan.side]} → nº ${t.seat}, falta escolher a arma`;
+        else text = 'ainda não escolheu';
+        return { slot: k.killerSlot!, text };
+      }),
+    // Os assassinos não ficam sabendo de sabotagens: mostram sempre o alvo original.
+    attacks: state.attacks.map((a) => ({
+      slot: a.killerId ? (slotOf.get(a.killerId) ?? null) : null,
+      seat: a.sabotagedFrom ?? a.seat,
+      weapon: a.weapon,
+      diesOnTurnTo: a.resolvesAfterRound + 1,
+    })),
+    saved: killers
+      .filter((k) => state.killerTargets[k.id])
+      .map((k) => ({ slot: k.killerSlot!, seat: state.killerTargets[k.id]!.seat, kind: state.killerTargets[k.id]!.kind })),
   };
 
   const inv = state.investigation;

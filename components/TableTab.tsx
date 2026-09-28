@@ -1,13 +1,14 @@
 'use client';
 
 import type { AnnouncementRow, PlayerRow } from '@/lib/client/types';
+import { announcementText } from '@/lib/client/announcements';
 import { isOnline } from '@/lib/client/useCountdown';
 
 /** "Mesa": o círculo de números, status públicos e histórico de anúncios. */
 export function TableTab({ players, announcements, viewerId }: { players: PlayerRow[]; announcements: AnnouncementRow[]; viewerId: string }) {
   const seated = players.filter((p) => p.seat !== null).sort((a, b) => a.seat! - b.seat!);
   const n = seated.length;
-  const annByPlayer = new Map(announcements.map((a) => [a.player_id, a]));
+  const annByPlayer = new Map(announcements.filter((a) => a.player_id).map((a) => [a.player_id!, a]));
   const rounds = [...new Set(announcements.map((a) => a.round))].sort((a, b) => b - a);
 
   return (
@@ -78,9 +79,7 @@ export function TableTab({ players, announcements, viewerId }: { players: Player
                 {announcements
                   .filter((a) => a.round === r)
                   .map((a) => (
-                    <li key={a.player_id}>
-                      nº {a.seat} · {a.name} ({a.character_name}) — {a.kind === 'death' ? 'morreu' : 'foi preso'}
-                    </li>
+                    <li key={a.idx}>{announcementText(a).title}</li>
                   ))}
               </ul>
             </div>
