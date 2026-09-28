@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { roomApi } from '@/lib/client/api';
 import type { PlayerRow, RoomRow } from '@/lib/client/types';
 
@@ -31,6 +31,16 @@ export function DevBar({
   };
   const viewable = players.filter((p) => p.id === myId || p.is_bot);
 
+  // Papel de cada um, só no modo de teste, para facilitar a validação.
+  const [roles, setRoles] = useState<Record<string, { role: string; character: string }>>({});
+  const deaths = players.filter((p) => p.status !== 'alive').length;
+  useEffect(() => {
+    if (room.status === 'lobby') return;
+    roomApi(code, 'dev-roles')
+      .then((r) => setRoles((r as unknown as { roles: typeof roles }).roles ?? {}))
+      .catch(() => {});
+  }, [code, room.status, room.current_round, deaths]);
+
   return (
     <div className="sticky top-0 z-30 border-b border-amber-500/30 bg-amber-950/90 px-3 py-2 text-xs text-amber-100 backdrop-blur">
       <div className="flex flex-wrap items-center gap-2">
@@ -46,6 +56,8 @@ export function DevBar({
                 {p.seat ? `nº ${p.seat} · ` : ''}
                 {p.name}
                 {p.id === myId ? ' (você)' : ''}
+                {roles[p.id] ? ` — ${roles[p.id].role}` : ''}
+                {p.status !== 'alive' ? (p.status === 'dead' ? ' ✝' : ' (preso)') : ''}
               </option>
             ))}
           </select>

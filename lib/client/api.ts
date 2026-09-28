@@ -33,7 +33,7 @@ export async function api<T = Record<string, unknown>>(path: string, body: unkno
   return json;
 }
 
-const READ_ONLY_OPS = new Set(['heartbeat', 'dev-view']);
+const READ_ONLY_OPS = new Set(['heartbeat', 'dev-view', 'dev-roles']);
 
 /** Chama uma operação da sala. Depois de escritas, avisa a tela para recarregar (além do Realtime). */
 export async function roomApi(code: string, op: string, body: unknown = {}) {

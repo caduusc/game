@@ -226,6 +226,10 @@ describe.skipIf(!url)('integração com Postgres', () => {
     await H.submitAction(devHost, c, { slot: 3, choice: '1', text: 'teste', actAs: bots[0].id }).catch((e) => {
       if (!/inválid|Não há|concluída|opções|Digite|Missão não encontrada/.test(e.message)) throw e;
     });
+    const roles = (await H.devRoles(devHost, c)).roles as Record<string, { role: string }>;
+    expect(Object.keys(roles)).toHaveLength(10);
+    expect(Object.values(roles).filter((r) => r.role.startsWith('Assassino'))).toHaveLength(2);
+    await expect(H.devRoles(randomUUID(), c)).rejects.toThrow(/sala/);
     const forced = await H.devForceEnd(devHost, c);
     expect(forced.resolved).toBe(true);
   });
