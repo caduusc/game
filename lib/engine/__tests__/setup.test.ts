@@ -80,7 +80,8 @@ describe('setupGame', () => {
       expect(new Set(s.players.map((p) => p.characterId)).size).toBe(n);
       expect(s.players.filter((p) => p.killerSlot === 'A')).toHaveLength(1);
       expect(s.players.filter((p) => p.killerSlot === 'B')).toHaveLength(1);
-      for (const p of s.players) expect(s.cards[p.id]).toHaveLength(3);
+      const expected = { killer: 1, investigator: 3, citizen: 2, police: 0, maniac: 0 } as const;
+      for (const p of s.players) expect(s.cards[p.id]).toHaveLength(expected[p.role]);
       // perguntas dos investigadores: 4, em assentos distintos, nunca investigadores
       const qs = s.investigation.questions;
       expect(qs).toHaveLength(4);

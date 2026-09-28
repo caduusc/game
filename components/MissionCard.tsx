@@ -15,6 +15,10 @@ export function MissionCard({ code, card, locked, actAs }: { code: string; card:
   const options = card.options ?? [];
   const asButtons = card.fields === 'choice' && options.length <= 4;
   const open = card.status === 'open' && !locked;
+  // O primeiro parágrafo é a explicação de para que serve a ação.
+  const split = card.prompt.indexOf('\n\n');
+  const help = split > 0 ? card.prompt.slice(0, split) : null;
+  const body = split > 0 ? card.prompt.slice(split + 2) : card.prompt;
 
   async function send(payload: { choice?: string | null; text?: string | null; skip?: boolean }) {
     setBusy(true);
@@ -45,7 +49,8 @@ export function MissionCard({ code, card, locked, actAs }: { code: string; card:
         <h3 className="label">{card.title}</h3>
         {card.status === 'done' && <span className="text-xs font-semibold text-emerald-400">Concluída</span>}
       </div>
-      <p className="mt-2 whitespace-pre-line text-[15px] leading-relaxed text-zinc-100">{card.prompt}</p>
+      {help && <p className="mt-2 rounded-lg border border-ink-700 bg-ink-950 px-3 py-2 text-sm leading-snug text-zinc-400">{help}</p>}
+      <p className="mt-2 whitespace-pre-line text-[15px] leading-relaxed text-zinc-100">{body}</p>
 
       {card.status === 'open' && (
         <form onSubmit={submit} className="mt-3 flex flex-col gap-2">

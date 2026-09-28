@@ -79,7 +79,7 @@ Celular (Next.js client) ──leitura com RLS + Realtime──▶ Supabase Post
 **Segredos de cada jogador.** Só o dono lê, pela função `owns_player(player_id)`, que confere `players.user_id = auth.uid()`:
 
 - `player_secrets`: papel, personagem e informações privadas.
-- `player_cards`: os 3 cards da rodada, só com texto e campos. Não há tipo real da tarefa nem resposta.
+- `player_cards`: os cards de ação da rodada, só com texto, opções e campos. Não há respostas.
 - `player_results`: resultados de "checar alvo" e "verificar identidade".
 
 **Dados de equipe.** Só membros da equipe leem, pela função `is_team_member(room_id, team)`:
@@ -217,7 +217,7 @@ A suíte do motor (`lib/engine/__tests__`) cobre:
 - **Resolução simultânea:** assassino morto ou preso na mesma virada ainda mata; vitória do maníaco; condições de vitória, incluindo o empate.
 - **Dicas:** em 200 sorteios, identificam exatamente os dois assassinos. A grade de personagens é única.
 - **Normalização de respostas:** acentos, pontuação, Levenshtein, datas, sinônimos de países, personagens e armas.
-- **Tela uniforme:** 3 cards com o mesmo formato para todos; decorativos não afetam o jogo; a projeção não vaza respostas.
+- **Cards de ação:** cada papel vê só as próprias ações, com explicação e botão de não fazer; pular não gasta nada.
 - **Host efetivo:** as regras de 60 s e de volta do host original.
 
 **Teste de integração** (`tests/integration.test.ts`): roda os Route Handlers contra um Postgres real. Ele cobre:
@@ -278,7 +278,7 @@ Implementadas conforme o enunciado e os ajustes combinados:
   - **Checar alvo:** no máximo 1 uso por rodada. "Alvos atuais" são os ataques que resolvem na próxima virada. Sem ataques em andamento, o app avisa e não gasta o uso.
   - **Sabotagem (1 vez no jogo):** quem descobre que é alvo pode escolher outro jogador vivo e uma entre 3 perguntas de múltipla escolha. O escolhido recebe o aviso de que terá 10 segundos; ao abrir, responde uma pergunta com 4 opções. Errou ou o tempo acabou: o alvo passa para ele e ele morre na virada no lugar do cidadão, independente da arma. Acertou: o alvo continua no cidadão. A rodada só vira depois da resposta. Na virada, todos veem "Houve uma sabotagem e o nº X tirou o alvo dele e colocou em outra pessoa" ou "Houve uma tentativa de sabotagem, mas falhou". Os assassinos não ficam sabendo da troca.
   - **Verificar identidade:** errar a charada não gasta o uso.
-- **Tela uniforme:** todos os papéis e as tarefas decorativas usam texto, listas e botões, para ninguém deduzir papéis pelo tipo de tela.
+- **Cards de ação:** cada jogador vê só as ações reais do seu papel, sem tarefas decorativas. Cada card tem um título, uma explicação de para que serve (por exemplo, "Responda esta charada somente se quiser atirar em alguém") e um botão para não fazer a ação, que não gasta nada. Quem não tem ações na rodada vê uma mensagem explicando o motivo.
 - **Vitória:** a condição dos assassinos considera os assassinos vivos **no início** da virada, porque as ações deles valem mesmo se caírem na mesma virada. Por isso a regra de empate funciona: se na mesma virada o último assassino é preso e o último cidadão morre, os assassinos vencem.
 - **Acusado que também leva tiro:** é anunciado como morto.
 - **Respostas:** o app ignora acentos, caixa, pontuação e artigo inicial ("o pente" vale "pente"). Aceita distância de Levenshtein até 1, ou até 2 para respostas com mais de 8 caracteres.

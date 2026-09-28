@@ -129,11 +129,11 @@ describe('policiais', () => {
     expect(c.done).toBe(true);
   });
 
-  it('sem tiros, o policial só recebe tarefas decorativas', () => {
+  it('sem tiros, o policial fica sem cards', () => {
     let s = makeState(twentyRoles(), { round: 2, arc: { l: 6, r: 6 } });
     s.policeShotsLeft.p15 = 0;
     s = resolveRound(s, ctx()).state;
-    expect(s.cards.p15.every((c) => c.kind === 'decoy')).toBe(true);
+    expect(s.cards.p15).toEqual([]);
   });
 });
 
