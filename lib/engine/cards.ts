@@ -1,6 +1,6 @@
 import { matchAnswer, matchCharacter, matchCountry, matchDate } from './answers';
 import { extendArc, SIDE_LABEL, sideChoices, tentativeTargets } from './arc';
-import { pick, randInt, shuffle } from './rng';
+import { pick, shuffle } from './rng';
 import {
   GameError,
   type Card,
@@ -8,7 +8,6 @@ import {
   type CardKind,
   type CardOption,
   type Character,
-  type DecoyStep,
   type EngineContext,
   type Fields,
   type GamePlayer,
@@ -99,11 +98,6 @@ export function pickRiddle(state: GameState, playerId: string, ctx: EngineContex
   return r;
 }
 
-function randomOtherSeat(state: GameState, me: GamePlayer, ctx: EngineContext): number {
-  const others = state.players.filter((p) => p.id !== me.id && p.status === 'alive');
-  return (others.length ? pick(ctx.rng, others) : me).seat;
-}
-
 /** Ataques que resolvem na próxima virada ("alvos atuais"). */
 export function currentAttacks(state: GameState) {
   return state.attacks.filter((a) => a.resolvesAfterRound === state.round);
@@ -123,58 +117,8 @@ function plural(n: number, one: string, many: string) {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-// ---------------------------------------------------------------- tarefas decorativas
-
-type DecoyTemplate = (seat: number, riddle: () => Riddle) => DecoyStep[];
-
-const AREAS: CardOption[] = ['Arte', 'Ciência', 'Política', 'Esporte'].map((a) => ({ value: a, label: a }));
-
-const DECOYS: DecoyTemplate[] = [
-  (x) => [{ prompt: `Descubra o personagem do número ${x}. Quem é ele?`, fields: 'text' }],
-  (x) => [{ prompt: `Descubra o personagem do número ${x} e informe o país dele.`, fields: 'text' }],
-  () => [{ prompt: 'Escolha o jogador que você acha mais suspeito nesta rodada.', fields: 'choice', options: 'seats' }],
-  () => [{ prompt: 'Escolha um jogador e escreva o personagem que você acha que ele é.', fields: 'choice_text', options: 'seats' }],
-  (_x, r) => [
-    { prompt: `Charada: ${r().question}`, fields: 'text' },
-    { prompt: 'Charada certa! Escolha um jogador e escreva o personagem que ele declarou.', fields: 'choice_text', options: 'seats' },
-  ],
-  (x) => [
-    {
-      prompt: `O personagem do número ${x} nasceu em qual século?`,
-      fields: 'choice',
-      options: [
-        { value: 'XIX', label: 'Século XIX' },
-        { value: 'XX', label: 'Século XX' },
-      ],
-    },
-  ],
-  (x) => [
-    {
-      prompt: `O personagem do número ${x} é brasileiro ou estrangeiro?`,
-      fields: 'choice',
-      options: [
-        { value: 'BR', label: 'Brasileiro' },
-        { value: 'EX', label: 'Estrangeiro' },
-      ],
-    },
-  ],
-  (x) => [{ prompt: `Em que área você acha que o personagem do número ${x} atua?`, fields: 'choice', options: AREAS }],
-  (_x, r) => [
-    {
-      prompt: `Charada: ${r().question} Escolha um jogador e responda.`,
-      fields: 'choice_text',
-      options: 'seats',
-      skipLabel: 'Pular nesta rodada',
-    },
-  ],
-  (_x, r) => [{ prompt: `Charada: ${r().question}`, fields: 'text' }],
-];
-
-function makeDecoy(state: GameState, me: GamePlayer, slot: number, ctx: EngineContext): Card {
-  const template = DECOYS[randInt(ctx.rng, DECOYS.length)];
-  const steps = template(randomOtherSeat(state, me, ctx), () => pickRiddle(state, me.id, ctx));
-  return { slot, kind: 'decoy', step: 0, done: false, attempts: 0, feedback: null, decoySteps: steps };
-}
+// Tarefas decorativas deixaram de ser geradas; o tipo 'decoy' só existe para
+// partidas antigas que ainda tenham esses cards salvos.
 
 // ---------------------------------------------------------------- montagem dos cards
 
@@ -201,14 +145,10 @@ export function buildCards(state: GameState, me: GamePlayer, ctx: EngineContext)
     case 'maniac':
       break;
   }
+  // Só ações reais: cada jogador vê apenas o que o papel dele pode fazer.
   const cards: Card[] = [];
-  for (let slot = 1; slot <= CARDS_PER_ROUND; slot++) {
-    const kind = kinds[slot - 1];
-    if (!kind) {
-      cards.push(makeDecoy(state, me, slot, ctx));
-      continue;
-    }
-    const card: Card = { slot, kind, step: 0, done: false, attempts: 0, feedback: null };
+  kinds.forEach((kind, i) => {
+    const card: Card = { slot: i + 1, kind, step: 0, done: false, attempts: 0, feedback: null };
     if (kind === 'police_shot' || kind === 'citizen_check' || kind === 'citizen_verify') {
       card.riddle = pickRiddle(state, me.id, ctx);
     }
@@ -216,7 +156,7 @@ export function buildCards(state: GameState, me: GamePlayer, ctx: EngineContext)
       card.quiz = shuffle(ctx.rng, ctx.quiz).slice(0, 3);
     }
     cards.push(card);
-  }
+  });
   return cards;
 }
 
@@ -302,7 +242,7 @@ function renderInner(state: GameState, me: GamePlayer, card: Card): Rendered {
     }
     case 'killer_initial':
       return {
-        prompt: `Escolham juntos o alvo inicial. Os dois precisam escolher a mesma pessoa. ${initialStatus(state, me)}`,
+        prompt: `Escolha quem será a primeira morte. ${initialStatus(state, me)}`,
         fields: 'choice',
         options: seatOptions(state, (p) => p.status === 'alive' && p.role !== 'killer'),
         status: 'open',
@@ -314,7 +254,7 @@ function renderInner(state: GameState, me: GamePlayer, card: Card): Rendered {
       const avail = availableQuestions(state);
       if (!avail.length) return done('Todas as perguntas abertas já foram tentadas nesta rodada.', 'choice_text');
       return {
-        prompt: `Pistas da equipe (1 tentativa por pergunta por rodada):\n${avail.map((q) => `• ${questionText(q)}`).join('\n')}\nEscolha a pergunta e escreva a resposta.`,
+        prompt: `Perguntas abertas:\n${avail.map((q) => `• ${questionText(q)}`).join('\n')}\nEscolha a pergunta e escreva a resposta.`,
         fields: 'choice_text',
         options: avail.map((q) => ({
           value: String(q.seat),
@@ -327,7 +267,7 @@ function renderInner(state: GameState, me: GamePlayer, card: Card): Rendered {
       const used = state.investigation.verifications.find((v) => v.round === state.round);
       if (used) return done(`A verificação da equipe nesta rodada já foi usada (nº ${used.seat}: ${used.truth ? 'VERDADE' : 'MENTIRA'}).`, 'choice_text');
       return {
-        prompt: 'Verificação da equipe (1 por rodada): escolha um jogador e escreva o personagem que ele declarou.',
+        prompt: 'Escolha um jogador e escreva o personagem que ele declarou.',
         fields: 'choice_text',
         options: seatOptions(state, (p) => p.id !== me.id),
         status: 'open',
@@ -335,7 +275,7 @@ function renderInner(state: GameState, me: GamePlayer, card: Card): Rendered {
     }
     case 'inv_accuse':
       return {
-        prompt: 'Acusação (1 por jogo): escolha quem você acusa. Se for assassino, será preso na virada.',
+        prompt: 'Escolha quem você acusa.',
         fields: 'choice',
         options: aliveOthers(state, me),
         status: 'open',
@@ -343,7 +283,7 @@ function renderInner(state: GameState, me: GamePlayer, card: Card): Rendered {
     case 'police_shot': {
       const left = state.policeShotsLeft[me.id] ?? 0;
       return {
-        prompt: `Tiro (${plural(left, 'tiro restante', 'tiros restantes')} no jogo, ${plural(POLICE_ATTEMPTS - card.attempts, 'tentativa', 'tentativas')} nesta charada). Charada: ${card.riddle!.question} Escolha o alvo e responda. Acertou: o alvo sai na virada.`,
+        prompt: `Charada: ${card.riddle!.question}\nEscolha o alvo e escreva a resposta (${plural(POLICE_ATTEMPTS - card.attempts, 'tentativa restante', 'tentativas restantes')}).`,
         fields: 'choice_text',
         options: aliveOthers(state, me),
         skipLabel: 'Não atirar nesta rodada',
@@ -385,7 +325,7 @@ function renderInner(state: GameState, me: GamePlayer, card: Card): Rendered {
           };
       }
       return {
-        prompt: `Checar alvo (${plural(uses, 'uso restante', 'usos restantes')}, ${plural(2 - card.attempts, 'tentativa', 'tentativas')}). Charada: ${card.riddle!.question}`,
+        prompt: `Charada: ${card.riddle!.question}\n(${plural(uses, 'uso restante', 'usos restantes')} no jogo, ${plural(2 - card.attempts, 'tentativa', 'tentativas')} nesta charada)`,
         fields: 'text',
         status: 'open',
       };
@@ -401,7 +341,7 @@ function renderInner(state: GameState, me: GamePlayer, card: Card): Rendered {
         };
       }
       return {
-        prompt: `Verificar identidade (${plural(uses, 'uso restante', 'usos restantes')}). Charada: ${card.riddle!.question}`,
+        prompt: `Charada: ${card.riddle!.question}\n(${plural(uses, 'uso restante', 'usos restantes')} no jogo)`,
         fields: 'text',
         status: 'open',
       };
@@ -409,18 +349,78 @@ function renderInner(state: GameState, me: GamePlayer, card: Card): Rendered {
   }
 }
 
+interface CardMeta {
+  title: string;
+  help: (state: GameState, me: GamePlayer, card: Card) => string;
+  skip: string;
+}
+
+/** Título, explicação de para que serve e botão para não fazer a ação. */
+const META: Record<Exclude<CardKind, 'decoy'>, CardMeta> = {
+  killer_initial: {
+    title: 'Primeira morte',
+    help: () =>
+      'Vocês dois precisam escolher a mesma pessoa. Ela é anunciada na virada e morre na virada da rodada 2 para a 3. Sem acordo, o app sorteia.',
+    skip: 'Deixar o app sortear',
+  },
+  killer_action: {
+    title: 'Ataque',
+    help: () =>
+      'Faça só se quiser atacar nesta rodada: escolha o lado e a arma que mata o alvo. Se a arma estiver certa, ele morre na virada da rodada seguinte.',
+    skip: 'Não atacar nesta rodada',
+  },
+  inv_question: {
+    title: 'Pistas',
+    help: () =>
+      'Responda só se souber: cada resposta certa libera uma dica sobre os assassinos para toda a equipe. Cada pergunta aceita 1 tentativa por rodada.',
+    skip: 'Não responder agora',
+  },
+  inv_verify: {
+    title: 'Verificação da equipe',
+    help: () => 'Use só se quiser conferir se alguém disse a verdade sobre o próprio personagem. Vale 1 por rodada para toda a equipe.',
+    skip: 'Não verificar agora',
+  },
+  inv_accuse: {
+    title: 'Acusação',
+    help: () =>
+      'Use só se tiver certeza: você tem 1 acusação no jogo. Se acusar um assassino, ele é preso na virada; se errar, a acusação é perdida.',
+    skip: 'Não acusar agora',
+  },
+  police_shot: {
+    title: 'Tiro',
+    help: (state, me) =>
+      `Responda esta charada somente se quiser atirar em alguém. Acertando, o alvo morre na virada. Você tem ${plural(state.policeShotsLeft[me.id] ?? 0, 'tiro', 'tiros')} no jogo.`,
+    skip: 'Não atirar nesta rodada',
+  },
+  citizen_check: {
+    title: 'Checar alvo',
+    help: (_s, _m, card) =>
+      card.step >= 2
+        ? 'Sabotagem (1 vez no jogo): passe o alvo para outra pessoa. Ela terá 10 segundos para responder uma pergunta; se errar, o alvo vai para ela.'
+        : 'Responda esta charada somente se quiser saber se você é um dos alvos dos assassinos. Se for, poderá sabotar e passar o alvo para outra pessoa.',
+    skip: 'Não checar agora',
+  },
+  citizen_verify: {
+    title: 'Verificar identidade',
+    help: () => 'Responda esta charada somente se quiser conferir se alguém disse a verdade sobre o próprio personagem.',
+    skip: 'Não verificar agora',
+  },
+};
+
 export function renderCard(state: GameState, me: GamePlayer, card: Card): CardView {
   const r = renderInner(state, me, card);
   const open = r.status === 'open';
+  const meta = card.kind === 'decoy' ? null : META[card.kind];
   return {
     slot: card.slot,
     round: state.round,
     step: card.step,
-    title: `Missão ${card.slot}`,
-    prompt: r.prompt,
+    title: meta?.title ?? `Missão ${card.slot}`,
+    // A explicação vem no primeiro parágrafo; a tela mostra em destaque separado.
+    prompt: meta && open ? `${meta.help(state, me, card)}\n\n${r.prompt}` : r.prompt,
     fields: r.fields,
     options: open ? (r.options ?? null) : null,
-    skipLabel: open ? (r.skipLabel ?? null) : null,
+    skipLabel: open ? (r.skipLabel ?? meta?.skip ?? null) : null,
     status: r.status,
     feedback: card.feedback,
   };
@@ -429,10 +429,7 @@ export function renderCard(state: GameState, me: GamePlayer, card: Card): CardVi
 // ---------------------------------------------------------------- respostas
 
 function validate(r: Rendered, input: CardInput) {
-  if (input.skip) {
-    if (!r.skipLabel) throw new GameError('Esta missão não pode ser pulada.');
-    return;
-  }
+  if (input.skip) return;
   if (r.fields !== 'text') requireOption(r.options ?? null, input.choice);
   if (r.fields !== 'choice' && !(input.text ?? '').trim()) throw new GameError('Digite uma resposta.');
 }
@@ -451,7 +448,7 @@ export function submitCard(state: GameState, playerId: string, slot: number, inp
   if (view.status === 'done') throw new GameError('Esta missão já foi concluída.');
   validate(view, input);
 
-  const feedback = handle(state, me, card, input);
+  const feedback = input.skip ? skipCard(state, me, card) : handle(state, me, card, input);
   card.feedback = feedback;
   return feedback;
 }
@@ -505,10 +502,6 @@ function handle(state: GameState, me: GamePlayer, card: Card, input: CardInput):
     }
 
     case 'police_shot': {
-      if (input.skip) {
-        card.done = true;
-        return 'Você decidiu não atirar nesta rodada. Nenhum tiro foi gasto.';
-      }
       const target = seatFromChoice(state, choice);
       if (matchAnswer(text, card.riddle!.answers)) {
         state.policeShots.push({ by: me.id, seat: target.seat });
@@ -548,6 +541,25 @@ function handle(state: GameState, me: GamePlayer, card: Card, input: CardInput):
       return result;
     }
   }
+}
+
+/** "Não fazer" a ação nesta rodada: nada é gasto. */
+function skipCard(state: GameState, me: GamePlayer, card: Card): string {
+  if (card.kind === 'decoy' && !card.decoySteps?.some((d) => d.skipLabel)) throw new GameError('Esta missão não pode ser pulada.');
+  if (card.kind === 'killer_action') {
+    const plan = (state.killerPlans[me.id] = { ...planOf(state, me.id) });
+    plan.done = true;
+    const saved = state.killerTargets[me.id];
+    plan.summary = saved
+      ? `Você não atacou nesta rodada. O alvo nº ${saved.seat} continua guardado.`
+      : 'Você decidiu não atacar nesta rodada.';
+    return plan.summary;
+  }
+  card.done = true;
+  if (card.kind === 'police_shot') return 'Você decidiu não atirar nesta rodada. Nenhum tiro foi gasto.';
+  if (card.kind === 'killer_initial') return 'Você deixou a escolha com o parceiro. Sem acordo, o app sorteia.';
+  if (card.kind === 'citizen_check' && card.step >= 2) return 'Você decidiu não sabotar.';
+  return 'Você decidiu não fazer isso nesta rodada. Nada foi gasto.';
 }
 
 function handleKiller(state: GameState, me: GamePlayer, choice: string): string {

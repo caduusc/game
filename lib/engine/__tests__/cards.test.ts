@@ -11,47 +11,48 @@ function card(s: GameState, pid: string, kind: Card['kind']): Card {
   return c;
 }
 
-describe('tela uniforme', () => {
-  it('todo jogador vivo tem 3 cards com o mesmo formato, em toda rodada', () => {
+describe('cards de ação', () => {
+  it('cada jogador vê só as ações do seu papel, com título, explicação e botão de não fazer', () => {
+    const s = makeState(twentyRoles());
+    const proj = project(s);
+    const titles = (id: string) => proj.cards[id].filter((c) => c.status !== 'gone').map((c) => c.title);
+    expect(titles('p10')).toEqual(['Primeira morte']);
+    expect(titles('p12')).toEqual(['Pistas', 'Verificação da equipe', 'Acusação']);
+    expect(titles('p1')).toEqual(['Checar alvo', 'Verificar identidade']);
+    expect(titles('p15')).toEqual([]); // policial só atira a partir da rodada 2
+    expect(titles('p17')).toEqual([]); // maníaco não tem ações
+    for (const c of proj.cards.p1) {
+      expect(c.prompt).toMatch(/somente se quiser/);
+      expect(c.skipLabel).toBeTruthy();
+    }
+    const police = project(makeState(twentyRoles(), { round: 2, arc: { l: 6, r: 6 } })).cards.p15[0];
+    expect(police.title).toBe('Tiro');
+    expect(police.prompt).toMatch(/^Responda esta charada somente se quiser atirar em alguém/);
+  });
+
+  it('não gera mais tarefas decorativas', () => {
     let s = makeState(twentyRoles());
     for (let r = 0; r < 3; r++) {
-      const proj = project(s);
-      for (const p of s.players) {
-        const views = proj.cards[p.id];
-        expect(views).toHaveLength(3);
-        for (const v of views) {
-          expect(Object.keys(v).sort()).toEqual(['feedback', 'fields', 'options', 'prompt', 'round', 'skipLabel', 'slot', 'status', 'step', 'title']);
-          expect(v.title).toMatch(/^Missão [123]$/);
-          if (p.status === 'alive') expect(v.prompt.length).toBeGreaterThan(0);
-        }
-      }
+      expect(Object.values(s.cards).flat().some((c) => c.kind === 'decoy')).toBe(false);
       s = resolveRound(s, ctx(r)).state;
     }
   });
 
-  it('tarefas decorativas usam texto, listas e botões', () => {
-    const fields = new Set<string>();
-    for (let seed = 1; seed < 30; seed++) {
-      const s = makeState(twentyRoles(), { cards: false });
-      s.cards = {};
-      const proj = project(resolveRound(s, ctx(seed)).state);
-      for (const v of proj.cards.p17) fields.add(v.fields);
-    }
-    expect([...fields].sort()).toEqual(['choice', 'choice_text', 'text']);
+  it('pular não gasta nada', () => {
+    const s = makeState(twentyRoles());
+    const c = card(s, 'p1', 'citizen_check');
+    expect(submitCard(s, 'p1', c.slot, { skip: true }, ctx())).toMatch(/Nada foi gasto/);
+    expect(s.citizens.p1.checkUses).toBe(2);
+    expect(c.done).toBe(true);
   });
 
-  it('tarefa decorativa aceita qualquer resposta e não afeta o jogo', () => {
-    const s = makeState(twentyRoles());
-    const maniac = bySeat(s, 17);
-    const before = JSON.stringify({ ...s, cards: null, usedRiddles: null });
-    for (const c of s.cards[maniac.id]) {
-      for (let guard = 0; guard < 5 && renderCard(s, maniac, c).status === 'open'; guard++) {
-        const v = renderCard(s, maniac, c);
-        submitCard(s, maniac.id, c.slot, { choice: v.options?.[0]?.value ?? null, text: 'qualquer coisa' }, ctx());
-      }
-      expect(c.feedback).toBe('Resposta registrada.');
-    }
-    expect(JSON.stringify({ ...s, cards: null, usedRiddles: null })).toBe(before);
+  it('assassino pode não atacar e mantém o alvo guardado', () => {
+    const s = makeState(twentyRoles(), { round: 3, arc: { l: 5, r: 6 } });
+    s.killerTargets.p10 = { seat: 5, side: 'L', kind: 'reserved' };
+    submitCard(s, 'p10', 1, { skip: true }, ctx());
+    expect(s.attacks).toEqual([]);
+    expect(s.killerTargets.p10?.seat).toBe(5);
+    expect(renderCard(s, bySeat(s, 10), card(s, 'p10', 'killer_action')).status).toBe('done');
   });
 
   it('valida as escolhas', () => {
@@ -82,7 +83,7 @@ describe('investigadores', () => {
     submitCard(s, 'p12', 3, { choice: '4' }, ctx());
     s = resolveRound(s, ctx()).state;
     expect(s.cards.p12.some((c) => c.kind === 'inv_accuse')).toBe(false);
-    expect(s.cards.p12).toHaveLength(3);
+    expect(s.cards.p12.map((c) => c.kind)).toEqual(['inv_question', 'inv_verify']);
   });
 });
 
@@ -109,7 +110,7 @@ describe('cidadãos', () => {
 describe('policiais', () => {
   it('não atiram na rodada 1', () => {
     const s = makeState(twentyRoles());
-    expect(s.cards.p15.every((c) => c.kind === 'decoy')).toBe(true);
+    expect(s.cards.p15).toEqual([]);
   });
 
   it('o card de tiro tem lista de jogadores e botão de não atirar', () => {

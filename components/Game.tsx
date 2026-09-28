@@ -67,6 +67,7 @@ export function Game({
   const turnItems = turn ? pub.announcements.filter((a) => a.round === turn.round) : [];
 
   const cards = priv.cards.filter((c) => c.round === room.current_round && c.status !== 'gone');
+  const cardsLoaded = priv.cards.some((c) => c.round === room.current_round);
   const seat = viewer?.seat ?? priv.secret?.data.seat;
   const maniacWon = priv.secret?.data.maniacWon;
 
@@ -122,7 +123,13 @@ export function Game({
             {paused && <Notice>Partida pausada pelo host.</Notice>}
             {expired && !paused && !room.standby && <Notice>Tempo esgotado. As ações estão travadas até a virada.</Notice>}
             {expired && !paused && room.standby && <Notice>Tempo esgotado. Aguardando uma resposta pendente para virar a rodada…</Notice>}
-            {cards.length === 0 && <p className="py-10 text-center text-sm text-zinc-500">Carregando missões…</p>}
+            {cards.length === 0 && !cardsLoaded && <p className="py-10 text-center text-sm text-zinc-500">Carregando…</p>}
+            {cards.length === 0 && cardsLoaded && (
+              <div className="panel text-sm text-zinc-300">
+                <p className="font-semibold text-zinc-100">Nenhuma ação nesta rodada.</p>
+                <p className="mt-1">{NO_ACTION[priv.secret?.role ?? ''] ?? 'Converse com a mesa e aguarde a próxima rodada.'}</p>
+              </div>
+            )}
             {cards.map((c) => (
               <MissionCard
                 key={`${c.round}-${c.slot}`}
@@ -147,6 +154,14 @@ export function Game({
     </>
   );
 }
+
+const NO_ACTION: Record<string, string> = {
+  maniac: 'Você não tem ações no celular. Seu objetivo é ser morto por um assassino ou policial: converse e chame atenção.',
+  police: 'Seus tiros começam na rodada 2 (ou você já usou os 2). Observe a mesa e converse.',
+  citizen: 'Você já usou suas ações. Converse com a mesa e ajude a encontrar os assassinos.',
+  investigator: 'Sua equipe já fez o que podia nesta rodada. Confira as dicas na sua ficha.',
+  killer: 'Não há alvos disponíveis agora. Aguarde a próxima rodada.',
+};
 
 function Notice({ children }: { children: React.ReactNode }) {
   return <p className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">{children}</p>;

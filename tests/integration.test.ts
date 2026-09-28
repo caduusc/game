@@ -82,7 +82,8 @@ describe.skipIf(!url)('integração com Postgres', () => {
       }));
       expect(res.players).toHaveLength(10);
       expect(res.secrets).toHaveLength(1);
-      expect(res.cards).toHaveLength(3);
+      const [mine] = await sql`select id from public.players where user_id = ${u} and room_id = ${roomId}`;
+      expect(res.cards.every((c) => c.player_id === mine.id)).toBe(true);
       const isKiller = killers.some((k) => k.user_id === u);
       expect(res.teams.some((t) => t.team === 'killers')).toBe(isKiller);
     }
@@ -221,9 +222,9 @@ describe.skipIf(!url)('integração com Postgres', () => {
       select id from public.players where room_id = ${created.roomId as string} and is_bot order by seat`;
     const view = await H.devView(devHost, c, { playerId: bots[0].id });
     expect(view.secret).toBeTruthy();
-    expect((view.cards as unknown[]).length).toBe(3);
+    expect((view.cards as { player_id: string }[]).every((c) => c.player_id === bots[0].id)).toBe(true);
     await H.submitAction(devHost, c, { slot: 3, choice: '1', text: 'teste', actAs: bots[0].id }).catch((e) => {
-      if (!/inválid|Não há|concluída|opções|Digite/.test(e.message)) throw e;
+      if (!/inválid|Não há|concluída|opções|Digite|Missão não encontrada/.test(e.message)) throw e;
     });
     const forced = await H.devForceEnd(devHost, c);
     expect(forced.resolved).toBe(true);
