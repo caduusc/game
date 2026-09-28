@@ -1,4 +1,4 @@
-import { buildCards } from './cards';
+import { buildCards, POLICE_SHOTS } from './cards';
 import { generateHints, isGridUnique } from './hints';
 import { shuffle } from './rng';
 import {
@@ -46,8 +46,7 @@ export const CITIZEN_CHECK_USES = 2;
 
 /** Primeira rodada começa aqui; também zera o estado por rodada e distribui os cards. */
 export function startRound(state: GameState, ctx: EngineContext): void {
-  state.choice = null;
-  state.weaponAnswers = {};
+  state.killerPlans = {};
   state.policeShots = [];
   for (const p of state.players) {
     state.cards[p.id] = p.status === 'alive' ? buildCards(state, p, ctx) : [];
@@ -107,6 +106,7 @@ export function setupGame(
   }));
 
   const state: GameState = {
+    version: 2,
     round: 1,
     status: 'playing',
     winner: null,
@@ -114,10 +114,12 @@ export function setupGame(
     characters,
     citizenVerifyUses: dist.citizenVerifyUses,
     arc: null,
-    pending: [],
-    initialTarget: null,
-    choice: null,
-    weaponAnswers: {},
+    initialPicks: Object.fromEntries(players.filter((p) => p.role === 'killer').map((p) => [p.id, null])),
+    attacks: [],
+    nextAttackId: 1,
+    killerTargets: {},
+    killerPlans: {},
+    policeShotsLeft: Object.fromEntries(players.filter((p) => p.role === 'police').map((p) => [p.id, POLICE_SHOTS])),
     policeShots: [],
     accusations: [],
     investigation: {
@@ -131,9 +133,16 @@ export function setupGame(
         .filter((p) => p.role === 'citizen')
         .map((p) => [
           p.id,
-          { checkUses: CITIZEN_CHECK_USES, verifyUses: dist.citizenVerifyUses, lastCheckRound: null, lastVerifyRound: null },
+          {
+            checkUses: CITIZEN_CHECK_USES,
+            verifyUses: dist.citizenVerifyUses,
+            sabotageUsed: false,
+            lastCheckRound: null,
+            lastVerifyRound: null,
+          },
         ]),
     ),
+    sabotages: [],
     cards: {},
     results: {},
     announcements: [],

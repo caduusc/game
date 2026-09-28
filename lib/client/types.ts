@@ -13,6 +13,7 @@ export interface RoomRow {
   resolved_round: number;
   winner: 'killers' | 'good' | 'none' | null;
   dev_mode: boolean;
+  standby: boolean;
 }
 
 export interface PlayerRow {
@@ -29,12 +30,14 @@ export interface PlayerRow {
 
 export interface AnnouncementRow {
   room_id: string;
+  idx: number;
   round: number;
-  player_id: string;
-  kind: 'death' | 'arrest';
-  name: string;
-  seat: number;
-  character_name: string;
+  kind: 'death' | 'arrest' | 'targeted' | 'sabotage_ok' | 'sabotage_fail';
+  player_id: string | null;
+  name: string | null;
+  seat: number | null;
+  character_name: string | null;
+  count: number | null;
 }
 
 export interface RevealRow {
@@ -55,7 +58,7 @@ export interface SecretRow {
   data: SecretData;
 }
 
-export type CardRow = CardView & { player_id: string };
+export type CardRow = Omit<CardView, 'skipLabel'> & { player_id: string; skip_label: string | null };
 
 export interface ResultRow {
   player_id: string;

@@ -78,7 +78,7 @@ export function useRoom(code: string) {
           return;
         }
         case 'announcements': {
-          const { data, error } = await sb.from('announcements').select('*').eq('room_id', id.roomId).order('round').order('seat');
+          const { data, error } = await sb.from('announcements').select('*').eq('room_id', id.roomId).order('idx');
           if (error) report('announcements', error);
           if (data) setPub((p) => ({ ...p, announcements: data as AnnouncementRow[] }));
           return;

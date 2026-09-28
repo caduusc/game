@@ -1,5 +1,5 @@
 import type { Projection } from '@/lib/engine';
-import type { Character, GameState, Riddle } from '@/lib/engine';
+import type { Character, GameState, QuizQuestion, Riddle } from '@/lib/engine';
 import type { Tx } from './db';
 import { json } from './db';
 
@@ -20,6 +20,10 @@ export async function saveState(tx: Tx, roomId: string, state: GameState): Promi
 
 export async function loadRiddles(tx: Tx): Promise<Riddle[]> {
   return tx<Riddle[]>`select id, question, answers from game_private.riddles order by id`;
+}
+
+export async function loadQuiz(tx: Tx): Promise<QuizQuestion[]> {
+  return tx<QuizQuestion[]>`select id, question, options, answer from game_private.quiz order by id`;
 }
 
 export async function loadCharacters(tx: Tx): Promise<Character[]> {
@@ -84,13 +88,17 @@ export async function persistProjection(tx: Tx, roomId: string, before: Projecti
   );
   if (cards.length) {
     await tx`
-      insert into public.player_cards (player_id, slot, room_id, round, step, title, prompt, fields, status, feedback, updated_at)
-      select x.player_id, x.slot, ${roomId}, x.round, x.step, x.title, x.prompt, x.fields, x.status, x.feedback, now()
+      insert into public.player_cards
+        (player_id, slot, room_id, round, step, title, prompt, fields, options, skip_label, status, feedback, updated_at)
+      select x.player_id, x.slot, ${roomId}, x.round, x.step, x.title, x.prompt, x.fields, x.options, x."skipLabel",
+             x.status, x.feedback, now()
       from jsonb_to_recordset(${json(tx, cards)})
-        as x(player_id uuid, slot int, round int, step int, title text, prompt text, fields text, status text, feedback text)
+        as x(player_id uuid, slot int, round int, step int, title text, prompt text, fields text, options jsonb,
+             "skipLabel" text, status text, feedback text)
       on conflict (player_id, slot) do update set
         round = excluded.round, step = excluded.step, title = excluded.title, prompt = excluded.prompt,
-        fields = excluded.fields, status = excluded.status, feedback = excluded.feedback, updated_at = now()`;
+        fields = excluded.fields, options = excluded.options, skip_label = excluded.skip_label,
+        status = excluded.status, feedback = excluded.feedback, updated_at = now()`;
   }
 
   // Resultados privados (só acrescenta)
@@ -132,21 +140,24 @@ export async function persistProjection(tx: Tx, roomId: string, before: Projecti
   }
 
   // Anúncios (só acrescenta)
-  const newAnnouncements = after.announcements.slice(before?.announcements.length ?? 0);
+  const start = before?.announcements.length ?? 0;
+  const newAnnouncements = after.announcements.slice(start);
   if (newAnnouncements.length) {
-    const rows = newAnnouncements.map((a) => ({
+    const rows = newAnnouncements.map((a, i) => ({
+      idx: start + i,
       round: a.round,
-      player_id: a.playerId,
       kind: a.kind,
-      name: a.name,
-      seat: a.seat,
-      character_name: a.characterName,
+      player_id: 'playerId' in a ? a.playerId : null,
+      name: 'name' in a ? a.name : null,
+      seat: 'seat' in a ? a.seat : null,
+      character_name: 'characterName' in a ? a.characterName : null,
+      count: 'count' in a ? a.count : null,
     }));
     await tx`
-      insert into public.announcements (room_id, round, player_id, kind, name, seat, character_name)
-      select ${roomId}, x.round, x.player_id, x.kind, x.name, x.seat, x.character_name
+      insert into public.announcements (room_id, idx, round, kind, player_id, name, seat, character_name, count)
+      select ${roomId}, x.idx, x.round, x.kind, x.player_id, x.name, x.seat, x.character_name, x.count
       from jsonb_to_recordset(${json(tx, rows)})
-        as x(round int, player_id uuid, kind text, name text, seat int, character_name text)
+        as x(idx int, round int, kind text, player_id uuid, name text, seat int, character_name text, count int)
       on conflict do nothing`;
   }
 

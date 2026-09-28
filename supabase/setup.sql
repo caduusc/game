@@ -361,6 +361,69 @@ end $$;
 -- Faz a API (PostgREST) recarregar o cache de tabelas imediatamente.
 notify pgrst, 'reload schema';
 
+-- ===== 20260928000003_rules_v2.sql
+-- Alergia — regras v2 (alvo com atraso, lado/arma em lista, 2 tiros, sabotagem)
+-- Pode ser executado mais de uma vez sem erro.
+
+-- Partidas em andamento com o formato antigo não são compatíveis: encerra sem vencedor.
+update public.rooms set status = 'finished', winner = 'none', ends_at = null
+where status = 'playing'
+  and exists (
+    select 1 from game_private.game_state g
+    where g.room_id = rooms.id and coalesce((g.state ->> 'version')::int, 1) < 2
+  );
+
+-- Sala aguardando uma resposta (sabotagem) para virar a rodada.
+alter table public.rooms add column if not exists standby boolean not null default false;
+
+-- Cards: listas de opções e botão secundário.
+delete from public.player_cards where fields not in ('text', 'choice', 'choice_text');
+alter table public.player_cards add column if not exists options jsonb;
+alter table public.player_cards add column if not exists skip_label text;
+alter table public.player_cards drop constraint if exists player_cards_fields_check;
+alter table public.player_cards add constraint player_cards_fields_check
+  check (fields in ('text', 'choice', 'choice_text'));
+
+-- Anúncios: além de mortes e prisões, "alvo escolhido" e sabotagens (sem jogador).
+alter table public.announcements add column if not exists idx integer;
+alter table public.announcements add column if not exists count integer;
+with numbered as (
+  select ctid, row_number() over (partition by room_id order by round, seat) - 1 as rn
+  from public.announcements where idx is null
+)
+update public.announcements a set idx = n.rn from numbered n where a.ctid = n.ctid;
+alter table public.announcements alter column idx set not null;
+alter table public.announcements drop constraint if exists announcements_pkey;
+alter table public.announcements add constraint announcements_pkey primary key (room_id, idx);
+alter table public.announcements
+  alter column player_id drop not null,
+  alter column name drop not null,
+  alter column seat drop not null,
+  alter column character_name drop not null;
+alter table public.announcements drop constraint if exists announcements_kind_check;
+alter table public.announcements add constraint announcements_kind_check
+  check (kind in ('death', 'arrest', 'targeted', 'sabotage_ok', 'sabotage_fail'));
+
+-- Perguntas de múltipla escolha (sabotagem). Oculta para o cliente.
+create table if not exists game_private.quiz (
+  id integer primary key,
+  question text not null unique,
+  options text[] not null check (cardinality(options) = 4),
+  answer integer not null check (answer between 0 and 3)
+);
+alter table game_private.quiz enable row level security;
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'revoke all on game_private.quiz from anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'revoke all on game_private.quiz from authenticated';
+  end if;
+end $$;
+
+notify pgrst, 'reload schema';
+
 -- ===== seed.sql
 -- Arquivo gerado por scripts/generate-seed.ts — não edite à mão.
 insert into game_private.characters (id, name, birth, country, gender, origin, century, area, weapon, aliases, weapon_aliases) values
@@ -488,3 +551,89 @@ insert into game_private.riddles (id, question, answers) values
   (91, 'O que é, o que é: tem cabo, tem cerdas e limpa o chão?', array['vassoura']::text[]),
   (92, 'O que é, o que é: sobe e desce o prédio sem usar degraus?', array['elevador']::text[])
 on conflict (id) do update set question = excluded.question, answers = excluded.answers;
+
+insert into game_private.quiz (id, question, options, answer) values
+  (1, 'Qual é a capital do Brasil?', array['Brasília', 'Rio de Janeiro', 'São Paulo', 'Salvador']::text[], 0),
+  (2, 'Quantos dias tem um ano bissexto?', array['365', '366', '364', '360']::text[], 1),
+  (3, 'Qual planeta é conhecido como Planeta Vermelho?', array['Vênus', 'Júpiter', 'Marte', 'Saturno']::text[], 2),
+  (4, 'Qual é o maior oceano do mundo?', array['Atlântico', 'Índico', 'Ártico', 'Pacífico']::text[], 3),
+  (5, 'Quantas patas tem uma aranha?', array['8', '6', '10', '12']::text[], 0),
+  (6, 'Qual é o maior mamífero do planeta?', array['Elefante-africano', 'Baleia-azul', 'Girafa', 'Tubarão-baleia']::text[], 1),
+  (7, 'Em que continente fica o Egito?', array['Ásia', 'Europa', 'África', 'Oceania']::text[], 2),
+  (8, 'Quanto é 7 × 8?', array['54', '64', '48', '56']::text[], 3),
+  (9, 'Qual é o símbolo químico da água?', array['H₂O', 'CO₂', 'O₂', 'NaCl']::text[], 0),
+  (10, 'Quem pintou a Mona Lisa?', array['Michelangelo', 'Leonardo da Vinci', 'Rafael', 'Van Gogh']::text[], 1),
+  (11, 'Qual é a língua oficial do Brasil?', array['Espanhol', 'Inglês', 'Português', 'Tupi']::text[], 2),
+  (12, 'Quantos minutos tem uma hora?', array['100', '30', '90', '60']::text[], 3),
+  (13, 'Qual é o rio mais extenso do Brasil em volume de água?', array['Amazonas', 'São Francisco', 'Paraná', 'Tietê']::text[], 0),
+  (14, 'Qual animal é conhecido como rei da selva?', array['Tigre', 'Leão', 'Elefante', 'Gorila']::text[], 1),
+  (15, 'Quantos lados tem um hexágono?', array['5', '7', '6', '8']::text[], 2),
+  (16, 'Qual é a cor resultante da mistura de azul e amarelo?', array['Roxo', 'Laranja', 'Marrom', 'Verde']::text[], 3),
+  (17, 'Em que ano o Brasil foi descoberto pelos portugueses?', array['1500', '1492', '1822', '1600']::text[], 0),
+  (18, 'Qual é o menor país do mundo?', array['Mônaco', 'Vaticano', 'Malta', 'San Marino']::text[], 1),
+  (19, 'Qual gás as plantas absorvem na fotossíntese?', array['Oxigênio', 'Nitrogênio', 'Gás carbônico', 'Hélio']::text[], 2),
+  (20, 'Quantos jogadores um time de futebol tem em campo?', array['10', '12', '9', '11']::text[], 3),
+  (21, 'Qual é a capital da Argentina?', array['Buenos Aires', 'Santiago', 'Montevidéu', 'Lima']::text[], 0),
+  (22, 'Qual é o maior país da América do Sul?', array['Argentina', 'Brasil', 'Peru', 'Colômbia']::text[], 1),
+  (23, 'Qual instrumento tem teclas brancas e pretas?', array['Violão', 'Flauta', 'Piano', 'Bateria']::text[], 2),
+  (24, 'Quantos estados tem o Brasil?', array['27', '25', '24', '26']::text[], 3),
+  (25, 'Qual é o metal mais usado em fios elétricos?', array['Cobre', 'Ouro', 'Ferro', 'Chumbo']::text[], 0),
+  (26, 'Qual é o satélite natural da Terra?', array['Sol', 'Lua', 'Marte', 'Europa']::text[], 1),
+  (27, 'Quantos ossos tem o corpo humano adulto (aproximadamente)?', array['150', '300', '206', '98']::text[], 2),
+  (28, 'Qual é o maior deserto quente do mundo?', array['Atacama', 'Gobi', 'Kalahari', 'Saara']::text[], 3),
+  (29, 'Quem escreveu "Dom Casmurro"?', array['Machado de Assis', 'José de Alencar', 'Clarice Lispector', 'Jorge Amado']::text[], 0),
+  (30, 'Qual é a moeda do Japão?', array['Yuan', 'Iene', 'Won', 'Rupia']::text[], 1),
+  (31, 'Qual é o órgão responsável por bombear o sangue?', array['Pulmão', 'Fígado', 'Coração', 'Rim']::text[], 2),
+  (32, 'Qual é o ponto mais alto do mundo?', array['Aconcágua', 'K2', 'Kilimanjaro', 'Monte Everest']::text[], 3),
+  (33, 'Quantas cores tem o arco-íris?', array['7', '6', '5', '8']::text[], 0),
+  (34, 'Qual é a capital da França?', array['Londres', 'Paris', 'Roma', 'Madri']::text[], 1),
+  (35, 'Qual animal põe ovos e é mamífero?', array['Morcego', 'Golfinho', 'Ornitorrinco', 'Canguru']::text[], 2),
+  (36, 'Qual é o maior planeta do Sistema Solar?', array['Saturno', 'Netuno', 'Terra', 'Júpiter']::text[], 3),
+  (37, 'Em que país ficam as pirâmides de Gizé?', array['Egito', 'México', 'Peru', 'Sudão']::text[], 0),
+  (38, 'Quanto é a metade de 150?', array['70', '75', '80', '65']::text[], 1),
+  (39, 'Qual é o esporte de Ayrton Senna?', array['Tênis', 'Futebol', 'Fórmula 1', 'Vôlei']::text[], 2),
+  (40, 'Qual é o estado mais populoso do Brasil?', array['Minas Gerais', 'Rio de Janeiro', 'Bahia', 'São Paulo']::text[], 3),
+  (41, 'Qual é o idioma mais falado na Argentina?', array['Espanhol', 'Português', 'Inglês', 'Italiano']::text[], 0),
+  (42, 'Qual é a estação do ano mais fria?', array['Outono', 'Inverno', 'Primavera', 'Verão']::text[], 1),
+  (43, 'Quantas horas tem um dia?', array['12', '48', '24', '20']::text[], 2),
+  (44, 'Qual inseto produz mel?', array['Formiga', 'Vespa', 'Borboleta', 'Abelha']::text[], 3),
+  (45, 'Qual é o nome do nosso planeta?', array['Terra', 'Marte', 'Vênus', 'Mercúrio']::text[], 0),
+  (46, 'Qual é a capital da Itália?', array['Milão', 'Roma', 'Veneza', 'Nápoles']::text[], 1),
+  (47, 'Qual fruta é conhecida por ter a semente do lado de fora?', array['Manga', 'Abacate', 'Caju', 'Pêssego']::text[], 2),
+  (48, 'Qual é o símbolo químico do ouro?', array['Ag', 'Fe', 'Go', 'Au']::text[], 3),
+  (49, 'Qual é o maior bioma do Brasil?', array['Amazônia', 'Cerrado', 'Caatinga', 'Pampa']::text[], 0),
+  (50, 'Quem foi o primeiro homem a pisar na Lua?', array['Yuri Gagarin', 'Neil Armstrong', 'Buzz Aldrin', 'Santos Dumont']::text[], 1),
+  (51, 'Qual é o resultado de 12 ÷ 3?', array['3', '6', '4', '9']::text[], 2),
+  (52, 'Qual é a capital de Portugal?', array['Porto', 'Coimbra', 'Braga', 'Lisboa']::text[], 3),
+  (53, 'Qual é o maior osso do corpo humano?', array['Fêmur', 'Tíbia', 'Úmero', 'Crânio']::text[], 0),
+  (54, 'Quantos meses tem um ano?', array['10', '12', '11', '13']::text[], 1),
+  (55, 'Qual é a festa brasileira famosa pelos desfiles de escolas de samba?', array['Festa Junina', 'Réveillon', 'Carnaval', 'Páscoa']::text[], 2),
+  (56, 'Qual gás respiramos para viver?', array['Hidrogênio', 'Gás carbônico', 'Metano', 'Oxigênio']::text[], 3),
+  (57, 'Qual é o animal mais rápido em terra?', array['Guepardo', 'Leão', 'Cavalo', 'Avestruz']::text[], 0),
+  (58, 'Qual cidade é conhecida como Cidade Maravilhosa?', array['Salvador', 'Rio de Janeiro', 'Recife', 'Florianópolis']::text[], 1),
+  (59, 'Quantos segundos tem um minuto?', array['100', '30', '60', '120']::text[], 2),
+  (60, 'Qual é o principal ingrediente do guacamole?', array['Tomate', 'Pepino', 'Milho', 'Abacate']::text[], 3),
+  (61, 'Qual é o país do tango?', array['Argentina', 'Espanha', 'Cuba', 'México']::text[], 0),
+  (62, 'Qual é o nome da estrela mais próxima da Terra?', array['Sírius', 'Sol', 'Alfa Centauri', 'Polar']::text[], 1),
+  (63, 'Qual é o plural de "cidadão"?', array['Cidadões', 'Cidadães', 'Cidadãos', 'Cidadãs']::text[], 2),
+  (64, 'Qual destes é um número primo?', array['15', '21', '27', '13']::text[], 3),
+  (65, 'Qual é a capital da Espanha?', array['Madri', 'Barcelona', 'Sevilha', 'Valência']::text[], 0),
+  (66, 'Qual é o maior felino do mundo?', array['Leão', 'Tigre', 'Onça-pintada', 'Leopardo']::text[], 1),
+  (67, 'Qual vitamina o corpo produz com a luz do sol?', array['Vitamina C', 'Vitamina A', 'Vitamina D', 'Vitamina B12']::text[], 2),
+  (68, 'Qual é o estado brasileiro conhecido pelo chimarrão?', array['Bahia', 'Pará', 'Goiás', 'Rio Grande do Sul']::text[], 3),
+  (69, 'Quantas faces tem um cubo?', array['6', '4', '8', '12']::text[], 0),
+  (70, 'Qual é a capital da Alemanha?', array['Munique', 'Berlim', 'Hamburgo', 'Frankfurt']::text[], 1),
+  (71, 'Qual é o nome do processo de a água virar vapor?', array['Condensação', 'Solidificação', 'Evaporação', 'Fusão']::text[], 2),
+  (72, 'Qual destes animais é um anfíbio?', array['Lagarto', 'Cobra', 'Tartaruga', 'Sapo']::text[], 3),
+  (73, 'Qual é o país mais populoso da América do Sul?', array['Brasil', 'Colômbia', 'Argentina', 'Venezuela']::text[], 0),
+  (74, 'Qual é a capital do Japão?', array['Osaka', 'Tóquio', 'Kyoto', 'Pequim']::text[], 1),
+  (75, 'Quanto é 15 + 27?', array['41', '43', '42', '32']::text[], 2),
+  (76, 'Qual é o maior órgão do corpo humano?', array['Fígado', 'Cérebro', 'Intestino', 'Pele']::text[], 3),
+  (77, 'Em que cidade fica o Cristo Redentor?', array['Rio de Janeiro', 'São Paulo', 'Belo Horizonte', 'Brasília']::text[], 0),
+  (78, 'Qual é a cor da clorofila?', array['Amarela', 'Verde', 'Vermelha', 'Azul']::text[], 1),
+  (79, 'Quantos anos tem uma década?', array['100', '5', '10', '12']::text[], 2),
+  (80, 'Qual é o autor de "Romeu e Julieta"?', array['Charles Dickens', 'Victor Hugo', 'Miguel de Cervantes', 'William Shakespeare']::text[], 3),
+  (81, 'Qual é a capital do Canadá?', array['Ottawa', 'Toronto', 'Vancouver', 'Montreal']::text[], 0),
+  (82, 'Qual destes é um mamífero marinho?', array['Tubarão', 'Golfinho', 'Atum', 'Polvo']::text[], 1)
+on conflict (id) do update set question = excluded.question, options = excluded.options, answer = excluded.answer;
+delete from game_private.quiz where id > 82;

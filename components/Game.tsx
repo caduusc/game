@@ -6,6 +6,7 @@ import type { AnnouncementRow, PrivateData, PublicData, RoomRow } from '@/lib/cl
 import { formatClock, useCountdown } from '@/lib/client/useCountdown';
 import { HostPanel } from './HostPanel';
 import { MissionCard } from './MissionCard';
+import { SabotageModal } from './SabotageModal';
 import { SheetTab } from './SheetTab';
 import { TableTab } from './TableTab';
 import { TurnModal } from './TurnModal';
@@ -81,7 +82,7 @@ export function Game({
             <p className={`font-mono text-4xl font-black tabular-nums ${paused ? 'text-amber-300' : remainingMs < 30_000 ? 'text-accent' : 'text-white'}`}>
               {formatClock(remainingMs)}
             </p>
-            <p className="text-xs text-zinc-400">{paused ? 'pausado' : expired ? 'virando a rodada…' : 'restante'}</p>
+            <p className="text-xs text-zinc-400">{paused ? 'pausado' : room.standby ? 'aguardando resposta…' : expired ? 'virando a rodada…' : 'restante'}</p>
           </div>
           <div className="text-right">
             <p className="label">Você é o</p>
@@ -119,7 +120,8 @@ export function Game({
         {tab === 'round' && alive && (
           <>
             {paused && <Notice>Partida pausada pelo host.</Notice>}
-            {expired && !paused && <Notice>Tempo esgotado. As ações estão travadas até a virada.</Notice>}
+            {expired && !paused && !room.standby && <Notice>Tempo esgotado. As ações estão travadas até a virada.</Notice>}
+            {expired && !paused && room.standby && <Notice>Tempo esgotado. Aguardando uma resposta pendente para virar a rodada…</Notice>}
             {cards.length === 0 && <p className="py-10 text-center text-sm text-zinc-500">Carregando missões…</p>}
             {cards.map((c) => (
               <MissionCard
@@ -138,6 +140,9 @@ export function Game({
       </main>
 
       {isHost && <HostPanel code={code} room={room} players={pub.players} isOriginalHost={isOriginalHost} />}
+      {alive && priv.secret?.data.sabotage && (
+        <SabotageModal code={code} sabotage={priv.secret.data.sabotage} actAs={viewerId !== myId ? viewerId : null} />
+      )}
       {turn && <TurnModal round={turn.round} items={turnItems} onClose={() => setTurn(null)} />}
     </>
   );

@@ -1,9 +1,9 @@
 import { matchWeapon } from './answers';
-import { assignTargets, extendArc, targetOptions } from './arc';
-import { characterOf, playerBySeat } from './cards';
+import { extendArc } from './arc';
+import { characterOf, expireSabotages, playerById, playerBySeat } from './cards';
 import { pick } from './rng';
 import { startRound } from './setup';
-import type { Announcement, EngineContext, GamePlayer, GameState, Role, Target, Winner } from './types';
+import type { Announcement, EngineContext, GamePlayer, GameState, Role, Winner } from './types';
 
 function countAlive(players: readonly GamePlayer[], roles: Role[]): number {
   return players.filter((p) => roles.includes(p.role) && p.status === 'alive').length;
@@ -33,7 +33,17 @@ export interface RoundOutcome {
   killedByKillers: number[];
   killedByPolice: number[];
   arrested: number[];
-  targets: Target[];
+  newAttacks: number;
+}
+
+/** Escolhe o alvo inicial: o acordo dos dois assassinos, ou sorteio. */
+function initialTarget(state: GameState, ctx: EngineContext): number {
+  const picks = Object.values(state.initialPicks);
+  const agreed = picks.length > 0 && picks.every((p) => p !== null && p === picks[0]) ? picks[0] : null;
+  const valid = agreed !== null && playerBySeat(state, agreed)?.status === 'alive' ? agreed : null;
+  if (valid !== null) return valid;
+  const pool = state.players.filter((p) => p.status === 'alive' && p.role !== 'killer');
+  return pick(ctx.rng, pool.length ? pool : state.players.filter((p) => p.status === 'alive')).seat;
 }
 
 /**
@@ -47,32 +57,43 @@ export function resolveRound(prev: GameState, ctx: EngineContext): { state: Game
   const before = structuredClone(state.players);
   const alive = (seat: number) => playerBySeat(state, seat)?.status === 'alive';
 
+  expireSabotages(state, ctx.now);
+
+  // Rodada 1: o alvo inicial vira um ataque automático que resolve na virada 2 → 3.
+  if (round === 1) {
+    const t = initialTarget(state, ctx);
+    state.arc = extendArc(null, t, null, n);
+    state.attacks.push({
+      id: state.nextAttackId++,
+      killerId: null,
+      seat: t,
+      side: null,
+      weapon: null,
+      chosenRound: 1,
+      resolvesAfterRound: 2,
+      sabotagedFrom: null,
+    });
+  }
+
   const killerKills = new Set<number>();
   const policeKills = new Set<number>();
   const arrests = new Set<number>();
-  let targets: Target[] = [];
+  const missed: { killerId: string; seat: number; side: GameState['attacks'][number]['side'] }[] = [];
 
-  // Assassinos
-  if (round === 1) {
-    let t = state.initialTarget;
-    if (t === null || !alive(t)) {
-      const pool = state.players.filter((p) => p.status === 'alive' && p.role !== 'killer');
-      t = pick(ctx.rng, pool.length ? pool : state.players.filter((p) => p.status === 'alive')).seat;
-    }
-    state.initialTarget = t;
-    killerKills.add(t);
-  } else if (state.arc) {
-    targets = state.choice ?? targetOptions(state)[0] ?? [];
-    for (const { seat } of assignTargets(state, targets)) {
-      const answer = state.weaponAnswers[String(seat)];
-      const victim = playerBySeat(state, seat)!;
-      if (answer && matchWeapon(answer.answer, characterOf(state, victim))) killerKills.add(seat);
-    }
+  // Ataques dos assassinos que vencem nesta virada
+  const due = state.attacks.filter((a) => a.resolvesAfterRound === round);
+  state.attacks = state.attacks.filter((a) => a.resolvesAfterRound !== round);
+  for (const a of due) {
+    const victim = playerBySeat(state, a.seat);
+    if (!victim || victim.status !== 'alive') continue;
+    const hits = a.weapon === null || a.sabotagedFrom !== null || matchWeapon(a.weapon, characterOf(state, victim));
+    if (hits) killerKills.add(a.seat);
+    else if (a.killerId) missed.push({ killerId: a.killerId, seat: a.seat, side: a.side });
   }
 
-  // Policiais
+  // Policiais: o tiro da rodada X mata na virada X → X+1
   for (const shot of state.policeShots) {
-    if (shot.correct && alive(shot.seat)) policeKills.add(shot.seat);
+    if (alive(shot.seat)) policeKills.add(shot.seat);
   }
 
   // Acusações
@@ -92,31 +113,45 @@ export function resolveRound(prev: GameState, ctx: EngineContext): { state: Game
     p.status = dies ? 'dead' : 'arrested';
     if (dies && p.role === 'maniac' && !state.maniacWon.includes(p.id)) state.maniacWon.push(p.id);
     announcements.push({
+      kind: dies ? 'death' : 'arrest',
       round,
       playerId: p.id,
       name: p.name,
       seat: p.seat,
-      kind: dies ? 'death' : 'arrest',
       characterName: characterOf(state, p).name,
     });
   }
+
+  // Sabotagens desta rodada
+  for (const s of state.sabotages) {
+    if (s.round !== round || s.announced) continue;
+    s.announced = true;
+    if (s.status === 'success') announcements.push({ kind: 'sabotage_ok', round, seat: s.bySeat });
+    else if (s.status === 'failed') announcements.push({ kind: 'sabotage_fail', round });
+  }
+
+  // Novos alvos escolhidos nesta rodada (morrem daqui a duas viradas)
+  const newAttacks = state.attacks.filter((a) => a.chosenRound === round).length;
+  if (newAttacks > 0) announcements.push({ kind: 'targeted', round, count: newAttacks });
   state.announcements.push(...announcements);
 
-  // Arco e alvos obrigatórios
-  if (round === 1) {
-    state.arc = { l: state.initialTarget!, r: state.initialTarget! };
-    state.pending = [];
-  } else if (state.arc) {
-    state.arc = extendArc(state.arc, targets, n);
-    const pending = [...state.pending, ...targets.map((t) => t.seat)];
-    state.pending = [...new Set(pending)].filter(alive);
+  // Arma errada: o alvo vivo fica obrigatório para o mesmo assassino.
+  for (const m of missed) {
+    if (!alive(m.seat)) continue;
+    const killer = state.players.find((p) => p.id === m.killerId);
+    if (killer?.status === 'alive') state.killerTargets[m.killerId] = { seat: m.seat, side: m.side, kind: 'obligatory' };
+  }
+  // Alvos guardados de quem saiu do jogo, ou já mortos, são descartados.
+  for (const [killerId, t] of Object.entries(state.killerTargets)) {
+    if (!t) continue;
+    if (playerById(state, killerId).status !== 'alive' || !alive(t.seat)) state.killerTargets[killerId] = null;
   }
 
   const outcome: RoundOutcome = {
     killedByKillers: [...killerKills].sort((a, b) => a - b),
     killedByPolice: [...policeKills].sort((a, b) => a - b),
     arrested: [...arrests].filter((s) => !killerKills.has(s) && !policeKills.has(s)).sort((a, b) => a - b),
-    targets,
+    newAttacks,
   };
 
   const winner = checkVictory(before, state.players);
