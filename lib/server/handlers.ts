@@ -556,6 +556,28 @@ export async function devView(userId: string, code: string, body: unknown): Prom
   return ok({ secret: secret ?? null, cards, results, teams });
 }
 
+/** Modo de teste: papel de cada bot (e do host), para facilitar a validação. */
+export async function devRoles(userId: string, code: string): Promise<Body> {
+  const sql = db();
+  const rooms = await sql<RoomRow[]>`select * from public.rooms where code = ${normalizeCode(code)}`;
+  if (!rooms.length) throw new HttpError(404, 'Sala não encontrada.');
+  const room = rooms[0];
+  const players = await sql<PlayerRow[]>`select * from public.players where room_id = ${room.id}`;
+  const me = findMe(players, userId);
+  requireDev(room, me);
+  const ids = players.filter((p) => p.is_bot || p.id === me.id).map((p) => p.id);
+  const rows = ids.length
+    ? await sql<{ player_id: string; role_label: string; character_name: string; slot: string | null }[]>`
+        select player_id, role_label, character_name, data ->> 'killerSlot' as slot
+        from public.player_secrets where player_id in ${sql(ids)}`
+    : [];
+  return ok({
+    roles: Object.fromEntries(
+      rows.map((r) => [r.player_id, { role: r.slot ? `${r.role_label} ${r.slot}` : r.role_label, character: r.character_name }]),
+    ),
+  });
+}
+
 export async function devForceEnd(userId: string, code: string): Promise<Body> {
   const now = Date.now();
   return db().begin(async (tx) => {
@@ -586,5 +608,6 @@ export const ROOM_OPS: Record<string, (userId: string, code: string, body: unkno
   'rejoin-code': createRejoinCode,
   'dev-bots': devAddBots,
   'dev-view': devView,
+  'dev-roles': (u, c) => devRoles(u, c),
   'dev-force-end': (u, c) => devForceEnd(u, c),
 };
